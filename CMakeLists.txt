@@ -10,7 +10,8 @@ include(GNUInstallDirs)
 add_executable(demap-tree src/demap-tree.cpp)
 
 target_sources(demap-tree PUBLIC FILE_SET CXX_MODULES FILES
-    src/cxxbtrfs.cpp)
+    src/cxxbtrfs.cpp
+    src/formatted_error.cpp)
 
 target_compile_options(demap-tree PUBLIC -Wall -Wextra -Wno-unqualified-std-cast-call -Wno-missing-field-initializers)
 
