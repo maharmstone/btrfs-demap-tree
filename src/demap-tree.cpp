@@ -1,6 +1,8 @@
 #include <iostream>
 #include <filesystem>
 #include <fstream>
+#include <getopt.h>
+#include "config.h"
 
 import cxxbtrfs;
 import formatted_error;
@@ -43,11 +45,55 @@ static void demap(const filesystem::path& fn) {
     // FIXME - process BGs with REMAPPED flag set
 }
 
-int main() {
-    // FIXME - solicit filename
+int main(int argc, char** argv) {
+    bool print_version = false, print_usage = false;
 
     try {
-        demap("../test.img");
+        while (true) {
+            enum {
+                GETOPT_VAL_HELP,
+                GETOPT_VAL_VERSION,
+            };
+
+            static const option long_opts[] = {
+                { "help", no_argument, nullptr, GETOPT_VAL_HELP },
+                { "version", no_argument, nullptr, GETOPT_VAL_VERSION },
+                { nullptr, 0, nullptr, 0 }
+            };
+
+            auto c = getopt_long(argc, argv, "", long_opts, nullptr);
+            if (c < 0)
+                break;
+
+            switch (c) {
+                case GETOPT_VAL_VERSION:
+                    print_version = true;
+                    break;
+                case GETOPT_VAL_HELP:
+                case '?':
+                    print_usage = true;
+                    break;
+            }
+        }
+
+        if (print_version) {
+            cout << "demap-tree " << PROJECT_VER << endl;
+            return 0;
+        }
+
+        if (print_usage || optind == argc) {
+            cerr << R"(Usage: demap-tree <device>
+
+Remove the remap-tree incompat feature from a btrfs filesystem.
+
+Options:
+    --version           print version string
+    --help              print this screen
+)";
+            return 1;
+        }
+
+        demap(argv[optind]);
     } catch (const exception& e) {
         cerr << "Exception: " << e.what() << endl;
         return 1;
