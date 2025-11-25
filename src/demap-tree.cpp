@@ -132,7 +132,7 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
 }
 
 static void walk_tree(fs& f, uint64_t addr,
-                      optional<function<void(const btrfs::key&, span<const uint8_t>)>> func = nullopt) {
+                      const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
     const auto& sb = f.dev.sb;
     auto tree = read_data(f, addr, sb.nodesize);
 
@@ -151,8 +151,7 @@ static void walk_tree(fs& f, uint64_t addr,
         for (const auto& it : items) {
             auto item = span((uint8_t*)tree.data() + sizeof(btrfs::header) + it.offset, it.size);
 
-            if (func.has_value())
-                func.value()(it.key, item);
+            func(it.key, item);
         }
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
