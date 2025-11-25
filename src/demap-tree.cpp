@@ -184,10 +184,25 @@ static void load_chunks(fs& f) {
     });
 }
 
+static void allocate_stripe(fs& f, uint64_t offset) {
+    print("FIXME - allocate_stripe {:x}\n", offset);
+
+    // FIXME - find hole in dev extent tree
+
+    // FIXME - clear RAID flags (make SINGLE)
+    // FIXME - also clear RAID flags in BG item
+    // FIXME - set num_stripes to 1
+    // FIXME - add stripe
+    // FIXME - add dev extent item
+}
+
 static void demap_bg(fs& f, uint64_t offset) {
     print("FIXME - demap_bg {:x}\n", offset); // FIXME
 
-    // FIXME - allocate chunk stripes if not already there
+    auto& [_, c] = find_chunk(f.chunks, offset);
+
+    if (c.num_stripes == 0)
+        allocate_stripe(f, offset);
 
     // FIXME - loop through non-identity remaps
     // FIXME - read data
@@ -198,6 +213,9 @@ static void demap_bg(fs& f, uint64_t offset) {
     // FIXME - remove remaps, remap_backrefs, and identity_remaps for range
     // FIXME - clear REMAPPED flag in chunk
     // FIXME - clear REMAPPED flag in BG
+
+    // FIXME - avoiding superblock
+    // FIXME - compressed extents need to be contiguous
 }
 
 static void demap(const filesystem::path& fn) {
