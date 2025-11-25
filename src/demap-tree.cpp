@@ -184,7 +184,8 @@ static void walk_tree2(fs& f, uint64_t addr,
 }
 
 static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
-                                                        const btrfs::key& key) {
+                                                        const btrfs::key& key,
+                                                        bool cow) {
     const auto& sb = f.dev.sb;
 
     if (!f.tree_cache.contains(addr)) {
@@ -205,6 +206,16 @@ static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
     auto& tree = f.tree_cache.find(addr)->second;
     const auto& h = *(btrfs::header*)tree.data();
 
+    if (cow) {
+        // FIXME - not if already COWed (WRITTEN flag not set)
+        // FIXME - allocate space from FST
+        // FIXME - if no space, allocate new chunk
+
+        // FIXME - if not top, update address and generation in parent
+        // FIXME - if top and not tree 1 or 3, update address and generation in tree 1
+        // FIXME - if top and tree 1 or 3, update address and generation in sb
+    }
+
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
@@ -223,17 +234,18 @@ static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
 
         for (size_t i = 0; i < h.nritems - 1; i++) {
             if (key >= items[i].key && key < items[i + 1].key)
-                return find_item2(f, items[i].blockptr, key);
+                return find_item2(f, items[i].blockptr, key, cow);
         }
 
-        return find_item2(f, items[h.nritems - 1].blockptr, key);
+        return find_item2(f, items[h.nritems - 1].blockptr, key, cow);
     }
 }
 
-static pair<btrfs::key, span<const uint8_t>> find_item(fs& f, uint64_t tree, const btrfs::key& key) {
+static pair<btrfs::key, span<const uint8_t>> find_item(fs& f, uint64_t tree,
+                                                       const btrfs::key& key, bool cow) {
     auto addr = find_tree_addr(f, tree);
 
-    return find_item2(f, addr, key);
+    return find_item2(f, addr, key, cow);
 }
 
 static uint64_t find_tree_addr(fs& f, uint64_t tree) {
@@ -244,7 +256,7 @@ static uint64_t find_tree_addr(fs& f, uint64_t tree) {
     else if (tree == btrfs::ROOT_TREE_OBJECTID)
         return sb.root;
 
-    auto [key, data] = find_item(f, btrfs::ROOT_TREE_OBJECTID, { tree, btrfs::key_type::ROOT_ITEM, 0 });
+    auto [key, data] = find_item(f, btrfs::ROOT_TREE_OBJECTID, { tree, btrfs::key_type::ROOT_ITEM, 0 }, false);
 
     if (key.objectid != tree || key.type != btrfs::key_type::ROOT_ITEM)
         throw formatted_error("find_tree_addr: tree {:x} not found in root\n", tree);
@@ -342,11 +354,25 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
     // FIXME - adjust dev and sb total_bytes for new stripe
 
+    auto key = btrfs::key{ btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM, offset };
+
+    auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
+
+    if (key != found_key)
+        throw formatted_error("allocate_stripe: searched for {}, found {}\n", key, found_key);
+
     // FIXME - clear RAID flags (make SINGLE)
     // FIXME - also clear RAID flags in BG item
     // FIXME - set num_stripes to 1
     // FIXME - add stripe
     // FIXME - add dev extent item
+
+    // FIXME - flushing transaction:
+    // FIXME - update FST
+    // FIXME - write COWed metadata
+    // FIXME - write superblock
+    // FIXME - unmark new metadata
+    // FIXME - free old metadata
 }
 
 static void demap_bg(fs& f, uint64_t offset) {
