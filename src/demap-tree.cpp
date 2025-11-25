@@ -184,6 +184,10 @@ static void load_chunks(fs& f) {
     });
 }
 
+static void demap_bg(fs& f, uint64_t offset) {
+    print("FIXME - demap_bg {:x}\n", offset); // FIXME
+}
+
 static void demap(const filesystem::path& fn) {
     fs f(fn);
 
@@ -204,11 +208,9 @@ static void demap(const filesystem::path& fn) {
     load_chunks(f);
 
     for (const auto& c : f.chunks) {
-        print("chunk {:x}\n", c.first);
+        if (c.second.type & btrfs::BLOCK_GROUP_REMAPPED)
+            demap_bg(f, c.first);
     }
-
-    // FIXME - loop through BGT
-    // FIXME - process BGs with REMAPPED flag set
 }
 
 int main(int argc, char** argv) {
