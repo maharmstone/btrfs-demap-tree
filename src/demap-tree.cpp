@@ -288,12 +288,12 @@ static void load_chunks(fs& f) {
     });
 }
 
-static void allocate_stripe(fs& f, uint64_t offset) {
+static uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
     auto& sb = f.dev.sb;
 
-    print("FIXME - allocate_stripe {:x}\n", offset);
+    // find hole in dev extent tree
 
-    // FIXME - find hole in dev extent tree
+    vector<pair<uint64_t, uint64_t>> allocs;
 
     walk_tree(f, btrfs::DEV_TREE_OBJECTID, btrfs::key{ sb.dev_item.devid, btrfs::key_type::DEV_EXTENT, 0 },
         [&](const btrfs::key& key, span<const uint8_t> item) {
@@ -303,10 +303,44 @@ static void allocate_stripe(fs& f, uint64_t offset) {
             if (key.objectid == sb.dev_item.devid && key.type > btrfs::key_type::DEV_EXTENT)
                 return false;
 
-            print("dev extent item: {}\n", key);
+            if (item.size() < sizeof(btrfs::dev_extent)) {
+                throw formatted_error("allocate_stripe: {} was {} bytes, expected {}\n",
+                                      key, item.size(), sizeof(btrfs::dev_extent));
+            }
+
+            const auto& de = *(btrfs::dev_extent*)item.data();
+
+            if (!allocs.empty() && allocs.back().first + allocs.back().second == key.offset)
+                allocs.back().second += de.length;
+            else
+                allocs.emplace_back(key.offset, de.length);
 
             return true;
     });
+
+    uint64_t end = 0x100000; // don't allocate in first megabyte
+
+    for (const auto& a : allocs) {
+        if (a.first - end >= size)
+            return end;
+
+        end = a.first + a.second;
+    }
+
+    if (f.dev.sb.dev_item.total_bytes - end >= size)
+        return end;
+
+    // FIXME - format size nicely
+    throw formatted_error("Could not find {} bytes free to allocate chunk stripe.", size);
+}
+
+static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
+    print("FIXME - allocate_stripe {:x}, {:x}\n", offset, size);
+
+    auto phys = find_hole_for_chunk(f, size);
+    print("phys = {:x}\n", phys);
+
+    // FIXME - adjust dev and sb total_bytes for new stripe
 
     // FIXME - clear RAID flags (make SINGLE)
     // FIXME - also clear RAID flags in BG item
@@ -321,7 +355,7 @@ static void demap_bg(fs& f, uint64_t offset) {
     auto& [_, c] = find_chunk(f.chunks, offset);
 
     if (c.num_stripes == 0)
-        allocate_stripe(f, offset);
+        allocate_stripe(f, offset, c.length);
 
     // FIXME - loop through non-identity remaps
     // FIXME - read data
