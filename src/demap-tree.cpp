@@ -186,6 +186,18 @@ static void load_chunks(fs& f) {
 
 static void demap_bg(fs& f, uint64_t offset) {
     print("FIXME - demap_bg {:x}\n", offset); // FIXME
+
+    // FIXME - allocate chunk stripes if not already there
+
+    // FIXME - loop through non-identity remaps
+    // FIXME - read data
+    // FIXME - write data
+    // FIXME - reduce remap_bytes of other BG
+
+    // FIXME - when finished:
+    // FIXME - remove remaps, remap_backrefs, and identity_remaps for range
+    // FIXME - clear REMAPPED flag in chunk
+    // FIXME - clear REMAPPED flag in BG
 }
 
 static void demap(const filesystem::path& fn) {
@@ -211,6 +223,13 @@ static void demap(const filesystem::path& fn) {
         if (c.second.type & btrfs::BLOCK_GROUP_REMAPPED)
             demap_bg(f, c.first);
     }
+
+    // FIXME - when finished:
+    // FIXME - remove (now empty) remap tree
+    // FIXME - remove all REMAP chunks
+    // FIXME - add data reloc tree
+    // FIXME - shorten block group items
+    // FIXME - clear incompat flag
 }
 
 int main(int argc, char** argv) {
