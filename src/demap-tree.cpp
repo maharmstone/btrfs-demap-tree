@@ -135,7 +135,8 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
 }
 
 static void walk_tree2(fs& f, uint64_t addr,
-                       const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
+                       const function<bool(const btrfs::key&, span<const uint8_t>)>& func,
+                       optional<btrfs::key> from) {
     const auto& sb = f.dev.sb;
 
     if (!f.tree_cache.contains(addr)) {
@@ -160,15 +161,24 @@ static void walk_tree2(fs& f, uint64_t addr,
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
         for (const auto& it : items) {
+            if (from.has_value() && it.key < *from)
+                continue;
+
             auto item = span((uint8_t*)tree.data() + sizeof(btrfs::header) + it.offset, it.size);
 
-            func(it.key, item);
+            if (!func(it.key, item))
+                break;
         }
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
-        for (const auto& it : items) {
-            walk_tree2(f, it.blockptr, func);
+        for (size_t i = 0; i < items.size(); i++) {
+            const auto& it = items[i];
+
+            if (from.has_value() && i < items.size() - 1 && *from < items[i + 1].key)
+                continue;
+
+            walk_tree2(f, it.blockptr, func, from);
         }
     }
 }
@@ -249,18 +259,18 @@ static uint64_t find_tree_addr(fs& f, uint64_t tree) {
     return ri.bytenr;
 }
 
-static void walk_tree(fs& f, uint64_t tree,
-                      const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
+static void walk_tree(fs& f, uint64_t tree, optional<btrfs::key> from,
+                      const function<bool(const btrfs::key&, span<const uint8_t>)>& func) {
     auto addr = find_tree_addr(f, tree);
 
-    walk_tree2(f, addr, func);
+    walk_tree2(f, addr, func, from);
 }
 
 static void load_chunks(fs& f) {
-    walk_tree(f, btrfs::CHUNK_TREE_OBJECTID,
+    walk_tree(f, btrfs::CHUNK_TREE_OBJECTID, nullopt,
               [&f](const btrfs::key& key, span<const uint8_t> item) {
         if (key.type != btrfs::key_type::CHUNK_ITEM)
-            return;
+            return true;
 
         const auto& c = *(chunk*)item.data();
 
@@ -273,16 +283,29 @@ static void load_chunks(fs& f) {
         }
 
         f.chunks.insert(make_pair((uint64_t)key.offset, c));
+
+        return true;
     });
 }
 
 static void allocate_stripe(fs& f, uint64_t offset) {
+    auto& sb = f.dev.sb;
+
     print("FIXME - allocate_stripe {:x}\n", offset);
 
     // FIXME - find hole in dev extent tree
 
-    walk_tree(f, btrfs::DEV_TREE_OBJECTID, [](const btrfs::key& key, span<const uint8_t> item) {
-        print("dev extent item: {}\n", key);
+    walk_tree(f, btrfs::DEV_TREE_OBJECTID, btrfs::key{ sb.dev_item.devid, btrfs::key_type::DEV_EXTENT, 0 },
+        [&](const btrfs::key& key, span<const uint8_t> item) {
+            if (key.objectid > sb.dev_item.devid)
+                return false;
+
+            if (key.objectid == sb.dev_item.devid && key.type > btrfs::key_type::DEV_EXTENT)
+                return false;
+
+            print("dev extent item: {}\n", key);
+
+            return true;
     });
 
     // FIXME - clear RAID flags (make SINGLE)
