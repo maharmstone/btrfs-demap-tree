@@ -132,8 +132,8 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
     return ret;
 }
 
-static void walk_tree(fs& f, uint64_t addr,
-                      const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
+static void walk_tree2(fs& f, uint64_t addr,
+                       const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
     const auto& sb = f.dev.sb;
 
     if (!f.tree_cache.contains(addr)) {
@@ -166,15 +166,31 @@ static void walk_tree(fs& f, uint64_t addr,
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
         for (const auto& it : items) {
-            walk_tree(f, it.blockptr, func);
+            walk_tree2(f, it.blockptr, func);
         }
     }
 }
 
-static void load_chunks(fs& f) {
+static uint64_t find_tree_addr(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
 
-    walk_tree(f, sb.chunk_root,
+    if (tree == btrfs::CHUNK_TREE_OBJECTID)
+        return sb.chunk_root;
+    else if (tree == btrfs::ROOT_TREE_OBJECTID)
+        return sb.root;
+
+    throw formatted_error("FIXME - lookup tree {:x} in tree root\n", tree); // FIXME
+}
+
+static void walk_tree(fs& f, uint64_t tree,
+                      const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
+    auto addr = find_tree_addr(f, tree);
+
+    walk_tree2(f, addr, func);
+}
+
+static void load_chunks(fs& f) {
+    walk_tree(f, btrfs::CHUNK_TREE_OBJECTID,
               [&f](const btrfs::key& key, span<const uint8_t> item) {
         if (key.type != btrfs::key_type::CHUNK_ITEM)
             return;
@@ -245,6 +261,8 @@ static void demap(const filesystem::path& fn) {
 
     load_sys_chunks(f);
     load_chunks(f);
+
+    // FIXME - die if transaction log there?
 
     for (const auto& c : f.chunks) {
         if (c.second.type & btrfs::BLOCK_GROUP_REMAPPED)
