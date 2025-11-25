@@ -2,6 +2,8 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <functional>
+#include <print>
 #include <getopt.h>
 #include "config.h"
 
@@ -23,6 +25,13 @@ struct chunk : btrfs::chunk {
     btrfs::stripe next_stripes[MAX_STRIPES - 1];
 };
 
+struct fs {
+    fs(const filesystem::path& fn) : dev(fn) { }
+
+    device dev;
+    map<uint64_t, chunk> sys_chunks, chunks;
+};
+
 static void read_superblock(device& d) {
     d.f.seekg(btrfs::superblock_addrs[0]);
     d.f.read((char*)&d.sb, sizeof(d.sb));
@@ -34,8 +43,8 @@ static void read_superblock(device& d) {
         throw runtime_error("superblock csum mismatch");
 }
 
-static map<uint64_t, chunk> load_sys_chunks(const btrfs::super_block& sb) {
-    map<uint64_t, chunk> sys_chunks;
+static void load_sys_chunks(fs& f) {
+    auto& sb = f.dev.sb;
 
     auto sys_array = span(sb.sys_chunk_array.data(), sb.sys_chunk_array_size);
 
@@ -65,29 +74,139 @@ static map<uint64_t, chunk> load_sys_chunks(const btrfs::super_block& sb) {
 
         sys_array = sys_array.subspan(offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)));
 
-        sys_chunks.insert(make_pair((uint64_t)k.offset, c));
+        f.sys_chunks.insert(make_pair((uint64_t)k.offset, c));
+    }
+}
+
+static const pair<uint64_t, const chunk&> find_chunk(const map<uint64_t, chunk>& chunks,
+                                                     uint64_t address) {
+    auto it = chunks.upper_bound(address);
+
+    if (it == chunks.begin())
+        throw formatted_error("could not find address {:x} in chunks", address);
+
+    const auto& p = *prev(it);
+
+    if (p.first + p.second.length <= address)
+        throw formatted_error("could not find address {:x} in chunks", address);
+
+    return p;
+}
+
+static string read_data(fs& f, uint64_t addr, uint64_t size) {
+    auto& chunks = f.chunks.empty() ? f.sys_chunks : f.chunks;
+    auto& [chunk_start, c] = find_chunk(chunks, addr);
+
+    // FIXME - remaps
+
+    string ret;
+
+    ret.resize(size);
+
+    // FIXME - handle degraded reads?
+    // FIXME - handle csum failures (get other stripe)
+
+    switch (btrfs::get_chunk_raid_type(c)) {
+        // FIXME - RAID5, RAID6, RAID10, RAID0
+
+        case btrfs::raid_type::SINGLE:
+        case btrfs::raid_type::DUP:
+        case btrfs::raid_type::RAID1:
+        case btrfs::raid_type::RAID1C3:
+        case btrfs::raid_type::RAID1C4: {
+            if (f.dev.sb.dev_item.devid != c.stripe[0].devid)
+                throw formatted_error("device {} not found", c.stripe[0].devid);
+
+            f.dev.f.seekg(c.stripe[0].offset + addr - chunk_start);
+            f.dev.f.read(ret.data(), size);
+
+            break;
+        }
+
+        default:
+            throw formatted_error("unhandled RAID type {}\n",
+                                  btrfs::get_chunk_raid_type(c));
     }
 
-    return sys_chunks;
+    return ret;
+}
+
+static void walk_tree(fs& f, uint64_t addr,
+                      optional<function<void(const btrfs::key&, span<const uint8_t>)>> func = nullopt) {
+    const auto& sb = f.dev.sb;
+    auto tree = read_data(f, addr, sb.nodesize);
+
+    const auto& h = *(btrfs::header*)tree.data();
+
+    // FIXME - also die on generation or level mismatch
+    // FIXME - check csums
+    // FIXME - use other chunk stripe if verification fails
+
+    if (h.bytenr != addr)
+        throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
+
+    if (h.level == 0) {
+        auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+
+        for (const auto& it : items) {
+            auto item = span((uint8_t*)tree.data() + sizeof(btrfs::header) + it.offset, it.size);
+
+            if (func.has_value())
+                func.value()(it.key, item);
+        }
+    } else {
+        auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+
+        for (const auto& it : items) {
+            walk_tree(f, it.blockptr, func);
+        }
+    }
+}
+
+static void load_chunks(fs& f) {
+    auto& sb = f.dev.sb;
+
+    walk_tree(f, sb.chunk_root,
+              [&f](const btrfs::key& key, span<const uint8_t> item) {
+        if (key.type != btrfs::key_type::CHUNK_ITEM)
+            return;
+
+        const auto& c = *(chunk*)item.data();
+
+        if (item.size() < offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)))
+            throw runtime_error("chunk item truncated");
+
+        if (c.num_stripes > MAX_STRIPES) {
+            throw formatted_error("chunk num_stripes is {}, maximum supported is {}",
+                                  c.num_stripes, MAX_STRIPES);
+        }
+
+        f.chunks.insert(make_pair((uint64_t)key.offset, c));
+    });
 }
 
 static void demap(const filesystem::path& fn) {
-    device d(fn);
+    fs f(fn);
 
-    if (d.f.fail())
+    if (f.dev.f.fail())
         throw formatted_error("Failed to open {}", fn.string()); // FIXME - include why
 
-    read_superblock(d);
+    read_superblock(f.dev);
 
-    if (!(d.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE))
+    auto& sb = f.dev.sb;
+
+    if (!(sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE))
         throw runtime_error("remap-tree incompat flag not set");
 
-    if (d.sb.num_devices != 1)
+    if (sb.num_devices != 1)
         throw runtime_error("multi-device support not yet implemented"); // FIXME
 
-    auto sys_chunks = load_sys_chunks(d.sb);
+    load_sys_chunks(f);
+    load_chunks(f);
 
-    // FIXME - load chunks
+    for (const auto& c : f.chunks) {
+        print("chunk {:x}\n", c.first);
+    }
 
     // FIXME - loop through BGT
     // FIXME - process BGs with REMAPPED flag set
