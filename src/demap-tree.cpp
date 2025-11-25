@@ -33,6 +33,8 @@ struct fs {
     map<uint64_t, string> tree_cache;
 };
 
+static uint64_t find_tree_addr(fs& f, uint64_t tree);
+
 static void read_superblock(device& d) {
     d.f.seekg(btrfs::superblock_addrs[0]);
     d.f.read((char*)&d.sb, sizeof(d.sb));
@@ -171,6 +173,59 @@ static void walk_tree2(fs& f, uint64_t addr,
     }
 }
 
+static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
+                                                        const btrfs::key& key) {
+    const auto& sb = f.dev.sb;
+
+    if (!f.tree_cache.contains(addr)) {
+        auto tree = read_data(f, addr, sb.nodesize);
+
+        const auto& h = *(btrfs::header*)tree.data();
+
+        // FIXME - also die on generation or level mismatch
+        // FIXME - check csums
+        // FIXME - use other chunk stripe if verification fails
+
+        if (h.bytenr != addr)
+            throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
+
+        f.tree_cache.emplace(make_pair(addr, tree));
+    }
+
+    auto& tree = f.tree_cache.find(addr)->second;
+    const auto& h = *(btrfs::header*)tree.data();
+
+    if (h.level == 0) {
+        auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+
+        for (const auto& it : items) {
+            if (it.key < key)
+                continue;
+
+            auto item = span((uint8_t*)tree.data() + sizeof(btrfs::header) + it.offset, it.size);
+
+            return make_pair(it.key, item);
+        }
+
+        return make_pair((btrfs::key){ 0xffffffffffffffff, (enum btrfs::key_type)0xff, 0xffffffffffffffff }, span<uint8_t>());
+    } else {
+        auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+
+        for (size_t i = 0; i < h.nritems - 1; i++) {
+            if (key >= items[i].key && key < items[i + 1].key)
+                return find_item2(f, items[i].blockptr, key);
+        }
+
+        return find_item2(f, items[h.nritems - 1].blockptr, key);
+    }
+}
+
+static pair<btrfs::key, span<const uint8_t>> find_item(fs& f, uint64_t tree, const btrfs::key& key) {
+    auto addr = find_tree_addr(f, tree);
+
+    return find_item2(f, addr, key);
+}
+
 static uint64_t find_tree_addr(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
 
@@ -179,7 +234,19 @@ static uint64_t find_tree_addr(fs& f, uint64_t tree) {
     else if (tree == btrfs::ROOT_TREE_OBJECTID)
         return sb.root;
 
-    throw formatted_error("FIXME - lookup tree {:x} in tree root\n", tree); // FIXME
+    auto [key, data] = find_item(f, btrfs::ROOT_TREE_OBJECTID, { tree, btrfs::key_type::ROOT_ITEM, 0 });
+
+    if (key.objectid != tree || key.type != btrfs::key_type::ROOT_ITEM)
+        throw formatted_error("find_tree_addr: tree {:x} not found in root\n", tree);
+
+    if (data.size() < sizeof(btrfs::root_item)) {
+        throw formatted_error("find_tree_addr: ROOT_ITEM for tree {:x} was {} bytes, expected {}\n",
+                              tree, data.size(), sizeof(btrfs::root_item));
+    }
+
+    const auto& ri = *(btrfs::root_item*)data.data();
+
+    return ri.bytenr;
 }
 
 static void walk_tree(fs& f, uint64_t tree,
@@ -213,6 +280,10 @@ static void allocate_stripe(fs& f, uint64_t offset) {
     print("FIXME - allocate_stripe {:x}\n", offset);
 
     // FIXME - find hole in dev extent tree
+
+    walk_tree(f, btrfs::DEV_TREE_OBJECTID, [](const btrfs::key& key, span<const uint8_t> item) {
+        print("dev extent item: {}\n", key);
+    });
 
     // FIXME - clear RAID flags (make SINGLE)
     // FIXME - also clear RAID flags in BG item
