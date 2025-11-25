@@ -30,6 +30,7 @@ struct fs {
 
     device dev;
     map<uint64_t, chunk> sys_chunks, chunks;
+    map<uint64_t, string> tree_cache;
 };
 
 static void read_superblock(device& d) {
@@ -134,16 +135,24 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
 static void walk_tree(fs& f, uint64_t addr,
                       const function<void(const btrfs::key&, span<const uint8_t>)>& func) {
     const auto& sb = f.dev.sb;
-    auto tree = read_data(f, addr, sb.nodesize);
 
+    if (!f.tree_cache.contains(addr)) {
+        auto tree = read_data(f, addr, sb.nodesize);
+
+        const auto& h = *(btrfs::header*)tree.data();
+
+        // FIXME - also die on generation or level mismatch
+        // FIXME - check csums
+        // FIXME - use other chunk stripe if verification fails
+
+        if (h.bytenr != addr)
+            throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
+
+        f.tree_cache.emplace(make_pair(addr, tree));
+    }
+
+    auto& tree = f.tree_cache.find(addr)->second;
     const auto& h = *(btrfs::header*)tree.data();
-
-    // FIXME - also die on generation or level mismatch
-    // FIXME - check csums
-    // FIXME - use other chunk stripe if verification fails
-
-    if (h.bytenr != addr)
-        throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
 
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
