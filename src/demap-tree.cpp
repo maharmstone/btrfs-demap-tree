@@ -368,11 +368,14 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - add dev extent item
 
     // FIXME - flushing transaction:
-    // FIXME - update FST
+    // FIXME - update FST (may be recursive)
+    // FIXME - update extent tree (may be recursive)
+    // FIXME - update used value in BG items
     // FIXME - write COWed metadata
     // FIXME - write superblock
     // FIXME - unmark new metadata
     // FIXME - free old metadata
+    // FIXME - update in-memory FST
 }
 
 static void demap_bg(fs& f, uint64_t offset) {
@@ -397,6 +400,51 @@ static void demap_bg(fs& f, uint64_t offset) {
     // FIXME - compressed extents need to be contiguous
 }
 
+static void load_fst(fs& f) {
+    using vp = vector<pair<uint64_t, uint64_t>>;
+
+    map<uint64_t, vp> fst;
+    vp* c = nullptr;
+
+    walk_tree(f, btrfs::FREE_SPACE_TREE_OBJECTID, nullopt,
+              [&](const btrfs::key& key, span<const uint8_t> data) {
+        switch (key.type) {
+            case btrfs::key_type::FREE_SPACE_INFO: {
+                auto [it, _] = fst.emplace((uint64_t)key.objectid, vp{});
+
+                c = &it->second;
+                break;
+            }
+
+            case btrfs::key_type::FREE_SPACE_EXTENT:
+                c->emplace_back(key.objectid, key.offset);
+                break;
+
+            case btrfs::key_type::FREE_SPACE_BITMAP:
+                throw formatted_error("FIXME - {} in FST\n", key);
+
+            default:
+                throw formatted_error("unexpected item {} in FST\n", key);
+        }
+
+        return true;
+    });
+
+    // FIXME - make sure we ignore spurious entries
+    // FIXME - cut out superblocks
+
+    // FIXME - merge into two lists, data and metadata?
+    // FIXME - order entries by size?
+
+    for (const auto& e : fst) {
+        print("FST chunk {:x}:\n", e.first);
+
+        for (const auto& e2 : e.second) {
+            print("{:x}, {:x}\n", e2.first, e2.second);
+        }
+    }
+}
+
 static void demap(const filesystem::path& fn) {
     fs f(fn);
 
@@ -417,6 +465,8 @@ static void demap(const filesystem::path& fn) {
     load_chunks(f);
 
     // FIXME - die if transaction log there?
+
+    load_fst(f);
 
     for (const auto& c : f.chunks) {
         if (c.second.type & btrfs::BLOCK_GROUP_REMAPPED)
