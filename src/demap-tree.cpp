@@ -501,7 +501,8 @@ static void write_superblocks(fs& f) {
         d.f.seekg(a);
 
         d.sb.bytenr = a;
-        // FIXME - calc csum
+
+        btrfs::calc_superblock_csum(d.sb);
 
         d.f.write((char*)&d.sb, sizeof(d.sb));
     }
@@ -660,6 +661,9 @@ static void demap(const filesystem::path& fn) {
     auto& sb = f.dev.sb;
 
     // FIXME - check incompat and compat_ro flags
+
+    if (sb.csum_type != btrfs::csum_type::CRC32)
+        throw formatted_error("FIXME - support csum type {}", sb.csum_type); // FIXME
 
     if (!(sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE))
         throw runtime_error("remap-tree incompat flag not set");

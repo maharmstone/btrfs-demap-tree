@@ -838,6 +838,16 @@ bool check_superblock_csum(const super_block& sb) {
     return *(le32*)sb.csum.data() == crc32;
 }
 
+void calc_superblock_csum(super_block& sb) {
+    if (sb.csum_type != csum_type::CRC32)
+        throw runtime_error("btrfs::calc_superblock_csum: unsupported csum type");
+
+    auto crc32 = ~calc_crc32c(0xffffffff,
+                              span((uint8_t*)&sb.fsid, sizeof(super_block) - sizeof(sb.csum)));
+
+    *(le32*)sb.csum.data() = crc32;
+}
+
 bool check_tree_csum(const header& h, const super_block& sb) {
     // FIXME - xxhash, sha256, blake2
 
