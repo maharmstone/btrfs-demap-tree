@@ -273,6 +273,7 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
         auto& h = *(btrfs::header*)new_tree.data();
 
         h.bytenr = new_addr;
+        h.generation = sb.generation + 1;
         h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
         print("allocated metadata to {:x} (was {:x})\n", new_addr, addr);
@@ -285,15 +286,14 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
 
         if (parent) {
             parent->blockptr = h.bytenr;
-            // FIXME - generation
+            parent->generation = sb.generation + 1;
         } else {
             if (tree == btrfs::CHUNK_TREE_OBJECTID) {
                 sb.chunk_root = h.bytenr;
-                // FIXME - generation
-            } else if (tree == btrfs::ROOT_TREE_OBJECTID) {
+                sb.chunk_root_generation = sb.generation + 1;
+            } else if (tree == btrfs::ROOT_TREE_OBJECTID)
                 sb.root = h.bytenr;
-                // FIXME - generation
-            } else {
+            else {
                 btrfs::key key{tree, btrfs::key_type::ROOT_ITEM, 0};
 
                 auto [found_key, sp] = find_item(f, btrfs::ROOT_TREE_OBJECTID,
@@ -310,7 +310,7 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
                 auto& ri = reinterpret_cast<btrfs::root_item&>(*sp.data());
 
                 ri.bytenr = h.bytenr;
-                // FIXME - generation
+                ri.generation = sb.generation + 1;
             }
         }
 
@@ -529,14 +529,16 @@ static void flush_transaction(fs& f) {
 
         h.flags |= btrfs::HEADER_FLAG_WRITTEN;
 
-        // FIXME - set generation
-
         calc_tree_csum(h, sb);
 
         write_data(f, h.bytenr, span((uint8_t*)tree.data(), sb.nodesize));
     }
 
     f.ref_changes.clear();
+
+    // FIXME - root tree always needs to be COWed
+
+    sb.generation = sb.generation + 1;
 
     write_superblocks(f);
 }
