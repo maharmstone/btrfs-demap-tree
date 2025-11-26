@@ -30,12 +30,17 @@ struct chunk_info {
     vector<pair<uint64_t, uint64_t>> fst;
 };
 
+struct ref_change {
+    int64_t refcount_change;
+};
+
 struct fs {
     fs(const filesystem::path& fn) : dev(fn) { }
 
     device dev;
     map<uint64_t, chunk_info> chunks;
     map<uint64_t, string> tree_cache;
+    map<uint64_t, ref_change> ref_changes;
 };
 
 static uint64_t find_tree_addr(fs& f, uint64_t tree);
@@ -261,6 +266,12 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
 
         print("allocated metadata to {:x} (was {:x})\n", new_addr, addr);
 
+        {
+            auto [it2, _] = f.ref_changes.emplace(new_addr, ref_change{});
+
+            it2->second.refcount_change = 1;
+        }
+
         if (parent) {
             parent->blockptr = h.bytenr;
             // FIXME - generation
@@ -437,6 +448,34 @@ static uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
     throw formatted_error("Could not find {} bytes free to allocate chunk stripe.", size);
 }
 
+static void flush_transaction(fs& f) {
+    // FIXME - update FST (may be recursive)
+    // FIXME - update extent tree (may be recursive)
+    // FIXME - update used value in BG items
+
+    for (auto& rc : f.ref_changes) {
+        if (rc.second.refcount_change < 0)
+            continue;
+
+        auto& tree = f.tree_cache.find(rc.first)->second;
+        auto& h = *(btrfs::header*)tree.data();
+
+        if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
+            continue;
+
+        print("FIXME - flush_transaction metadata {:x}\n", rc.first);
+
+        // FIXME - set WRITTEN flag
+        // FIXME - calc checksum
+        // FIXME - write metadata
+    }
+
+    f.ref_changes.clear();
+
+    // FIXME - sb backups
+    // FIXME - write superblocks
+}
+
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     print("FIXME - allocate_stripe {:x}, {:x}\n", offset, size);
 
@@ -458,13 +497,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - add stripe
     // FIXME - add dev extent item
 
-    // FIXME - flushing transaction:
-    // FIXME - update FST (may be recursive)
-    // FIXME - update extent tree (may be recursive)
-    // FIXME - update used value in BG items
-    // FIXME - write COWed metadata
-    // FIXME - sb backups
-    // FIXME - write superblock
+    flush_transaction(f);
 
     // FIXME - unmark new metadata
     // FIXME - free old metadata
