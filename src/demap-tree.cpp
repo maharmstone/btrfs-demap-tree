@@ -495,7 +495,8 @@ static void write_superblocks(fs& f) {
     // FIXME - sb backups
 
     for (auto a : btrfs::superblock_addrs) {
-        // FIXME - break if past end
+        if (a + sizeof(d.sb) > f.dev.sb.dev_item.total_bytes)
+            break;
 
         d.f.seekg(a);
 
