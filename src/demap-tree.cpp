@@ -193,15 +193,26 @@ static void walk_tree2(fs& f, uint64_t addr,
     }
 }
 
-static uint64_t allocate_metadata(fs& f) {
+static uint64_t allocate_metadata(fs& f, uint64_t tree) {
+    uint64_t type;
     auto& sb = f.dev.sb;
 
-    // FIXME - remap tree in REMAP, chunk tree in SYSTEM
+    switch (tree) {
+        case btrfs::CHUNK_TREE_OBJECTID:
+            type = btrfs::BLOCK_GROUP_SYSTEM;
+            break;
+
+        default:
+            type = btrfs::BLOCK_GROUP_METADATA;
+            break;
+    }
+
+    // FIXME - remap tree in REMAP
 
     // allocate from FST
 
     for (auto& [_, c] : f.chunks) {
-        if (!(c.c.type & btrfs::BLOCK_GROUP_METADATA))
+        if (!(c.c.type & type))
             continue;
 
         for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
@@ -254,7 +265,7 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
     const string* tree_ptr;
 
     if (cow && orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
-        auto new_addr = allocate_metadata(f);
+        auto new_addr = allocate_metadata(f, tree);
 
         auto [it, _] = f.tree_cache.emplace(new_addr, orig_tree);
 
