@@ -25,11 +25,16 @@ struct chunk : btrfs::chunk {
     btrfs::stripe next_stripes[MAX_STRIPES - 1];
 };
 
+struct chunk_info {
+    chunk c;
+    vector<pair<uint64_t, uint64_t>> fst;
+};
+
 struct fs {
     fs(const filesystem::path& fn) : dev(fn) { }
 
     device dev;
-    map<uint64_t, chunk> sys_chunks, chunks;
+    map<uint64_t, chunk_info> sys_chunks, chunks;
     map<uint64_t, string> tree_cache;
 };
 
@@ -81,7 +86,7 @@ static void load_sys_chunks(fs& f) {
     }
 }
 
-static const pair<uint64_t, const chunk&> find_chunk(const map<uint64_t, chunk>& chunks,
+static const pair<uint64_t, const chunk_info&> find_chunk(const map<uint64_t, chunk_info>& chunks,
                                                      uint64_t address) {
     auto it = chunks.upper_bound(address);
 
@@ -90,7 +95,7 @@ static const pair<uint64_t, const chunk&> find_chunk(const map<uint64_t, chunk>&
 
     const auto& p = *prev(it);
 
-    if (p.first + p.second.length <= address)
+    if (p.first + p.second.c.length <= address)
         throw formatted_error("could not find address {:x} in chunks", address);
 
     return p;
@@ -109,7 +114,7 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
     // FIXME - handle degraded reads?
     // FIXME - handle csum failures (get other stripe)
 
-    switch (btrfs::get_chunk_raid_type(c)) {
+    switch (btrfs::get_chunk_raid_type(c.c)) {
         // FIXME - RAID5, RAID6, RAID10, RAID0
 
         case btrfs::raid_type::SINGLE:
@@ -117,10 +122,10 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
         case btrfs::raid_type::RAID1:
         case btrfs::raid_type::RAID1C3:
         case btrfs::raid_type::RAID1C4: {
-            if (f.dev.sb.dev_item.devid != c.stripe[0].devid)
-                throw formatted_error("device {} not found", c.stripe[0].devid);
+            if (f.dev.sb.dev_item.devid != c.c.stripe[0].devid)
+                throw formatted_error("device {} not found", c.c.stripe[0].devid);
 
-            f.dev.f.seekg(c.stripe[0].offset + addr - chunk_start);
+            f.dev.f.seekg(c.c.stripe[0].offset + addr - chunk_start);
             f.dev.f.read(ret.data(), size);
 
             break;
@@ -128,7 +133,7 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
 
         default:
             throw formatted_error("unhandled RAID type {}\n",
-                                  btrfs::get_chunk_raid_type(c));
+                                  btrfs::get_chunk_raid_type(c.c));
     }
 
     return ret;
@@ -383,8 +388,8 @@ static void demap_bg(fs& f, uint64_t offset) {
 
     auto& [_, c] = find_chunk(f.chunks, offset);
 
-    if (c.num_stripes == 0)
-        allocate_stripe(f, offset, c.length);
+    if (c.c.num_stripes == 0)
+        allocate_stripe(f, offset, c.c.length);
 
     // FIXME - loop through non-identity remaps
     // FIXME - read data
@@ -430,18 +435,32 @@ static void load_fst(fs& f) {
         return true;
     });
 
-    // FIXME - make sure we ignore spurious entries
     // FIXME - cut out superblocks
 
     // FIXME - merge into two lists, data and metadata?
     // FIXME - order entries by size?
 
-    for (const auto& e : fst) {
-        print("FST chunk {:x}:\n", e.first);
+    auto fst_it = fst.begin();
+    auto c_it = f.chunks.begin();
 
-        for (const auto& e2 : e.second) {
-            print("{:x}, {:x}\n", e2.first, e2.second);
+    while (fst_it != fst.end()) {
+        auto& e = *fst_it;
+
+        while (c_it->first < e.first) {
+            c_it++;
         }
+
+        auto& c = *c_it;
+
+        // old versions of mkfs.btrfs create spurious FST entries, ignore these
+        if (c.first != e.first) {
+            fst_it++;
+            continue;
+        }
+
+        c.second.fst = move(e.second);
+
+        fst_it++;
     }
 }
 
@@ -469,7 +488,7 @@ static void demap(const filesystem::path& fn) {
     load_fst(f);
 
     for (const auto& c : f.chunks) {
-        if (c.second.type & btrfs::BLOCK_GROUP_REMAPPED)
+        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAPPED)
             demap_bg(f, c.first);
     }
 
