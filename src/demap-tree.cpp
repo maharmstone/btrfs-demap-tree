@@ -34,7 +34,7 @@ struct fs {
     fs(const filesystem::path& fn) : dev(fn) { }
 
     device dev;
-    map<uint64_t, chunk_info> sys_chunks, chunks;
+    map<uint64_t, chunk_info> chunks;
     map<uint64_t, string> tree_cache;
 };
 
@@ -82,15 +82,14 @@ static void load_sys_chunks(fs& f) {
 
         sys_array = sys_array.subspan(offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)));
 
-        f.sys_chunks.insert(make_pair((uint64_t)k.offset, c));
+        f.chunks.insert(make_pair((uint64_t)k.offset, c));
     }
 }
 
-static const pair<uint64_t, const chunk_info&> find_chunk(const map<uint64_t, chunk_info>& chunks,
-                                                     uint64_t address) {
-    auto it = chunks.upper_bound(address);
+static const pair<uint64_t, const chunk_info&> find_chunk(fs& f, uint64_t address) {
+    auto it = f.chunks.upper_bound(address);
 
-    if (it == chunks.begin())
+    if (it == f.chunks.begin())
         throw formatted_error("could not find address {:x} in chunks", address);
 
     const auto& p = *prev(it);
@@ -102,8 +101,7 @@ static const pair<uint64_t, const chunk_info&> find_chunk(const map<uint64_t, ch
 }
 
 static string read_data(fs& f, uint64_t addr, uint64_t size) {
-    auto& chunks = f.chunks.empty() ? f.sys_chunks : f.chunks;
-    auto& [chunk_start, c] = find_chunk(chunks, addr);
+    auto& [chunk_start, c] = find_chunk(f, addr);
 
     // FIXME - remaps
 
@@ -284,8 +282,10 @@ static void walk_tree(fs& f, uint64_t tree, optional<btrfs::key> from,
 }
 
 static void load_chunks(fs& f) {
+    map<uint64_t, chunk_info> chunks;
+
     walk_tree(f, btrfs::CHUNK_TREE_OBJECTID, nullopt,
-              [&f](const btrfs::key& key, span<const uint8_t> item) {
+              [&chunks](const btrfs::key& key, span<const uint8_t> item) {
         if (key.type != btrfs::key_type::CHUNK_ITEM)
             return true;
 
@@ -299,10 +299,12 @@ static void load_chunks(fs& f) {
                                   c.num_stripes, MAX_STRIPES);
         }
 
-        f.chunks.insert(make_pair((uint64_t)key.offset, c));
+        chunks.insert(make_pair((uint64_t)key.offset, c));
 
         return true;
     });
+
+    swap(f.chunks, chunks);
 }
 
 static uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
@@ -386,7 +388,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 static void demap_bg(fs& f, uint64_t offset) {
     print("FIXME - demap_bg {:x}\n", offset); // FIXME
 
-    auto& [_, c] = find_chunk(f.chunks, offset);
+    auto& [_, c] = find_chunk(f, offset);
 
     if (c.c.num_stripes == 0)
         allocate_stripe(f, offset, c.c.length);
