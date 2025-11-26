@@ -17,7 +17,7 @@ using namespace std;
 struct device {
     device(const filesystem::path& fn) : f(fn) { }
 
-    ifstream f;
+    fstream f;
     btrfs::super_block sb;
 };
 
@@ -448,7 +448,56 @@ static uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
     throw formatted_error("Could not find {} bytes free to allocate chunk stripe.", size);
 }
 
+static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
+    auto& [chunk_start, c] = find_chunk(f, addr);
+
+    switch (btrfs::get_chunk_raid_type(c.c)) {
+        // FIXME - RAID5, RAID6, RAID10, RAID0
+
+        case btrfs::raid_type::SINGLE:
+        case btrfs::raid_type::DUP:
+        case btrfs::raid_type::RAID1:
+        case btrfs::raid_type::RAID1C3:
+        case btrfs::raid_type::RAID1C4: {
+            auto stripes = span(c.c.stripe, c.c.num_stripes);
+
+            for (auto& s : stripes) {
+                if (f.dev.sb.dev_item.devid != s.devid)
+                    throw formatted_error("device {} not found", s.devid);
+
+                f.dev.f.seekg(s.offset + addr - chunk_start);
+                f.dev.f.write((char*)data.data(), data.size());
+            }
+
+            break;
+        }
+
+        default:
+            throw formatted_error("unhandled RAID type {}\n",
+                                  btrfs::get_chunk_raid_type(c.c));
+    }
+}
+
+static void write_superblocks(fs& f) {
+    auto& d = f.dev;
+
+    // FIXME - sb backups
+
+    for (auto a : btrfs::superblock_addrs) {
+        // FIXME - break if past end
+
+        d.f.seekg(a);
+
+        d.sb.bytenr = a;
+        // FIXME - calc csum
+
+        d.f.write((char*)&d.sb, sizeof(d.sb));
+    }
+}
+
 static void flush_transaction(fs& f) {
+    auto& sb = f.dev.sb;
+
     // FIXME - update FST (may be recursive)
     // FIXME - update extent tree (may be recursive)
     // FIXME - update used value in BG items
@@ -465,15 +514,17 @@ static void flush_transaction(fs& f) {
 
         print("FIXME - flush_transaction metadata {:x}\n", rc.first);
 
-        // FIXME - set WRITTEN flag
+        h.flags |= btrfs::HEADER_FLAG_WRITTEN;
+
+        // FIXME - set generation
         // FIXME - calc checksum
-        // FIXME - write metadata
+
+        write_data(f, h.bytenr, span((uint8_t*)tree.data(), sb.nodesize));
     }
 
     f.ref_changes.clear();
 
-    // FIXME - sb backups
-    // FIXME - write superblocks
+    write_superblocks(f);
 }
 
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
@@ -612,8 +663,10 @@ static void demap(const filesystem::path& fn) {
     load_fst(f);
 
     for (const auto& c : f.chunks) {
-        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAPPED)
+        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
             demap_bg(f, c.first);
+            break; // FIXME
+        }
     }
 
     // FIXME - when finished:
