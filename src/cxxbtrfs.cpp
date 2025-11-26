@@ -87,6 +87,27 @@ public:
         return *this;
     }
 
+    template<integral T2>
+    little_endian<T>& operator &=(const T2& b) {
+        *this = (T)*this & b;
+
+        return *this;
+    }
+
+    template<integral T2>
+    little_endian<T>& operator |=(const T2& b) {
+        *this = (T)*this | b;
+
+        return *this;
+    }
+
+    template<integral T2>
+    little_endian<T>& operator ^=(const T2& b) {
+        *this = (T)*this ^ b;
+
+        return *this;
+    }
+
 private:
     uint8_t val[sizeof(T)];
 } __attribute__((packed));

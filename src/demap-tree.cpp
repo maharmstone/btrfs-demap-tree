@@ -257,7 +257,7 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
         auto& h = *(btrfs::header*)new_tree.data();
 
         h.bytenr = new_addr;
-        h.flags = h.flags & ~btrfs::HEADER_FLAG_WRITTEN;
+        h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
         print("allocated metadata to {:x} (was {:x})\n", new_addr, addr);
 
