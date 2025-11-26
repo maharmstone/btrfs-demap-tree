@@ -186,6 +186,41 @@ static void walk_tree2(fs& f, uint64_t addr,
     }
 }
 
+static uint64_t allocate_metadata(fs& f) {
+    auto& sb = f.dev.sb;
+
+    // FIXME - remap tree in REMAP, chunk tree in SYSTEM
+
+    // allocate from FST
+
+    for (auto& [_, c] : f.chunks) {
+        if (!(c.c.type & btrfs::BLOCK_GROUP_METADATA))
+            continue;
+
+        for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
+            auto& e = *it;
+
+            if (e.second < sb.nodesize)
+                continue;
+
+            auto addr = e.first;
+
+            if (e.second == sb.nodesize)
+                c.fst.erase(it);
+            else {
+                e.first += sb.nodesize;
+                e.second -= sb.nodesize;
+            }
+
+            return addr;
+        }
+    }
+
+    // FIXME - if no space, allocate new chunk
+
+    throw runtime_error("could not find space to allocate new metadata");
+}
+
 static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
                                                         const btrfs::key& key,
                                                         bool cow) {
@@ -207,16 +242,26 @@ static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
     }
 
     auto& tree = f.tree_cache.find(addr)->second;
-    const auto& h = *(btrfs::header*)tree.data();
+    auto& h = *(btrfs::header*)tree.data();
 
-    if (cow) {
-        // FIXME - not if already COWed (WRITTEN flag not set)
-        // FIXME - allocate space from FST
+    if (cow && h.flags & btrfs::HEADER_FLAG_WRITTEN) {
+        auto addr = allocate_metadata(f);
         // FIXME - if no space, allocate new chunk
+
+        // FIXME - allocate new cache entry for tree
+
+        h.bytenr = addr;
+        h.flags = h.flags & ~btrfs::HEADER_FLAG_WRITTEN;
+
+        print("allocated metadata to {:x}\n", addr);
 
         // FIXME - if not top, update address and generation in parent
         // FIXME - if top and not tree 1 or 3, update address and generation in tree 1
         // FIXME - if top and tree 1 or 3, update address and generation in sb
+
+        // FIXME - mark as dirty
+        // FIXME - mark old tree as going away
+        // FIXME - what if COWing snapshotted tree?
     }
 
     if (h.level == 0) {
