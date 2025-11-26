@@ -241,19 +241,22 @@ static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
         f.tree_cache.emplace(make_pair(addr, tree));
     }
 
-    auto& tree = f.tree_cache.find(addr)->second;
-    auto& h = *(btrfs::header*)tree.data();
+    const auto& orig_tree = f.tree_cache.find(addr)->second;
+    const auto& orig_h = *(btrfs::header*)orig_tree.data();
+    const string* tree_ptr;
 
-    if (cow && h.flags & btrfs::HEADER_FLAG_WRITTEN) {
-        auto addr = allocate_metadata(f);
-        // FIXME - if no space, allocate new chunk
+    if (cow && orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
+        auto new_addr = allocate_metadata(f);
 
-        // FIXME - allocate new cache entry for tree
+        auto [it, _] = f.tree_cache.emplace(addr, orig_tree);
 
-        h.bytenr = addr;
+        auto& new_tree = it->second;
+        auto& h = *(btrfs::header*)new_tree.data();
+
+        h.bytenr = new_addr;
         h.flags = h.flags & ~btrfs::HEADER_FLAG_WRITTEN;
 
-        print("allocated metadata to {:x}\n", addr);
+        print("allocated metadata to {:x} (was {:x})\n", new_addr, addr);
 
         // FIXME - if not top, update address and generation in parent
         // FIXME - if top and not tree 1 or 3, update address and generation in tree 1
@@ -262,7 +265,12 @@ static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
         // FIXME - mark as dirty
         // FIXME - mark old tree as going away
         // FIXME - what if COWing snapshotted tree?
-    }
+
+        tree_ptr = &new_tree;
+    } else
+        tree_ptr = &orig_tree;
+
+    const auto& h = *(btrfs::header*)tree_ptr->data();
 
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
@@ -271,7 +279,7 @@ static pair<btrfs::key, span<const uint8_t>> find_item2(fs& f, uint64_t addr,
             if (it.key < key)
                 continue;
 
-            auto item = span((uint8_t*)tree.data() + sizeof(btrfs::header) + it.offset, it.size);
+            auto item = span((uint8_t*)tree_ptr->data() + sizeof(btrfs::header) + it.offset, it.size);
 
             return make_pair(it.key, item);
         }
