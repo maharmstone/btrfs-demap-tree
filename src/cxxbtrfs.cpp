@@ -108,6 +108,18 @@ public:
         return *this;
     }
 
+    little_endian<T>& operator++(int) {
+        *this = (T)*this + 1;
+
+        return *this;
+    }
+
+    little_endian<T>& operator--(int) {
+        *this = (T)*this - 1;
+
+        return *this;
+    }
+
 private:
     uint8_t val[sizeof(T)];
 } __attribute__((packed));

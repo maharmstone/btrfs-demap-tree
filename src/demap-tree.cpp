@@ -538,7 +538,7 @@ static void flush_transaction(fs& f) {
 
     // FIXME - root tree always needs to be COWed
 
-    sb.generation = sb.generation + 1;
+    sb.generation++;
 
     write_superblocks(f);
 }
