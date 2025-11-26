@@ -839,6 +839,8 @@ bool check_superblock_csum(const super_block& sb) {
 }
 
 void calc_superblock_csum(super_block& sb) {
+    // FIXME - xxhash, sha256, blake2
+
     if (sb.csum_type != csum_type::CRC32)
         throw runtime_error("btrfs::calc_superblock_csum: unsupported csum type");
 
@@ -857,6 +859,17 @@ bool check_tree_csum(const header& h, const super_block& sb) {
     auto crc32 = ~calc_crc32c(0xffffffff, span((uint8_t*)&h.fsid, sb.nodesize - sizeof(h.csum)));
 
     return *(le32*)h.csum.data() == crc32;
+}
+
+void calc_tree_csum(header& h, const super_block& sb) {
+    // FIXME - xxhash, sha256, blake2
+
+    if (sb.csum_type != csum_type::CRC32)
+        throw runtime_error("btrfs::calc_tree_csum: unsupported csum type");
+
+    auto crc32 = ~calc_crc32c(0xffffffff, span((uint8_t*)&h.fsid, sb.nodesize - sizeof(h.csum)));
+
+    *(le32*)h.csum.data() = crc32;
 }
 
 }

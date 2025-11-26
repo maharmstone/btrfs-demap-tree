@@ -530,7 +530,8 @@ static void flush_transaction(fs& f) {
         h.flags |= btrfs::HEADER_FLAG_WRITTEN;
 
         // FIXME - set generation
-        // FIXME - calc checksum
+
+        calc_tree_csum(h, sb);
 
         write_data(f, h.bytenr, span((uint8_t*)tree.data(), sb.nodesize));
     }
