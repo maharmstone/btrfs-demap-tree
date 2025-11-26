@@ -251,7 +251,7 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
     if (cow && orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
         auto new_addr = allocate_metadata(f);
 
-        auto [it, _] = f.tree_cache.emplace(addr, orig_tree);
+        auto [it, _] = f.tree_cache.emplace(new_addr, orig_tree);
 
         auto& new_tree = it->second;
         auto& h = *(btrfs::header*)new_tree.data();
