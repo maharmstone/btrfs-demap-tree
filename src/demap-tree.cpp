@@ -284,6 +284,13 @@ static pair<string&, uint32_t> find_item2(fs& f, uint64_t addr,
         print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, addr, h.owner);
 
         {
+            auto [it2, inserted] = f.ref_changes.emplace(addr, ref_change{-1});
+
+            if (!inserted)
+                it2->second.refcount_change--;
+        }
+
+        {
             auto [it2, _] = f.ref_changes.emplace(new_addr, ref_change{});
 
             it2->second.refcount_change = 1;
@@ -601,11 +608,60 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
     return span((uint8_t*)buf.data() + sizeof(btrfs::header) + items[slot].offset, size);
 }
 
+static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
+    auto& sb = f.dev.sb;
+
+    print("delete_item: tree {:x}, key {}\n", tree, key);
+
+    auto addr = find_tree_addr(f, tree);
+    auto [buf, slot] = find_item2(f, addr, key, true, nullptr, tree);
+
+    auto& h = *(btrfs::header*)buf.data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    if (slot >= h.nritems || key != items[slot].key) {
+        throw formatted_error("delete_item: key {} in tree {:x} does not exist",
+                              key, tree);
+    }
+
+    // move data
+
+    if (items[slot].size != 0) {
+        unsigned int data_size = 0, after_item = 0;
+
+        for (unsigned int i = 0; i < h.nritems; i++) {
+            data_size += items[i].size;
+
+            if (i > slot)
+                after_item += items[i].size;
+        }
+
+        memmove(buf.data() + sb.nodesize - data_size + items[slot].size,
+                buf.data() + sb.nodesize - data_size,
+                after_item);
+
+        for (unsigned int i = slot + 1; i < h.nritems; i++) {
+            items[i].offset += (uint32_t)items[slot].size; // FIXME - make it so cast not needed
+        }
+    }
+
+    // adjust items
+
+    memmove(&items[slot], &items[slot + 1],
+            sizeof(btrfs::item) * (h.nritems - slot - 1));
+    h.nritems--;
+
+    // FIXME - update parents if deleting first item
+
+    // FIXME - if nritems is now 0 and not top, remove entry in parent
+    // FIXME - adjust levels if internal tree has only one entry
+    // FIXME - merging trees
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
     // FIXME - update FST (may be recursive)
-    // FIXME - removing extent tree items
     // FIXME - update used value in BG items
 
     {
@@ -617,33 +673,41 @@ static void flush_transaction(fs& f) {
             swap(local, f.ref_changes);
 
             for (auto& rc : local) {
-                print("{:x}\n", rc.first);
+                print("{:x} ({})\n", rc.first, rc.second.refcount_change);
 
-                if (rc.second.refcount_change < 0)
+                if (rc.second.refcount_change == 0)
                     continue;
 
                 auto& tree = f.tree_cache.find(rc.first)->second;
                 auto& h = *(btrfs::header*)tree.data();
 
-                if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
-                    continue;
+                if (rc.second.refcount_change < 0) {
+                    // remove extent tree item
 
-                // add extent tree item
+                    // FIXME - might be snapshotted (refcount > 1)
+                    // FIXME - might have non-inline elements
+                    // FIXME - might be old-style (i.e. not METADATA_ITEM)
 
-                auto sp = insert_item(f, btrfs::EXTENT_TREE_OBJECTID,
-                                    { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level },
-                                    sizeof(btrfs::extent_item) + sizeof(btrfs::extent_inline_ref));
+                    delete_item(f, btrfs::EXTENT_TREE_OBJECTID,
+                                { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
+                } else {
+                    // add extent tree item
 
-                auto& ei = *(btrfs::extent_item*)sp.data();
+                    auto sp = insert_item(f, btrfs::EXTENT_TREE_OBJECTID,
+                                          { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level },
+                                          sizeof(btrfs::extent_item) + sizeof(btrfs::extent_inline_ref));
 
-                ei.refs = 1;
-                ei.generation = sb.generation + 1;
-                ei.flags = btrfs::EXTENT_FLAG_TREE_BLOCK;
+                    auto& ei = *(btrfs::extent_item*)sp.data();
 
-                auto& eir = *(btrfs::extent_inline_ref*)(sp.data() + sizeof(btrfs::extent_item));
+                    ei.refs = 1;
+                    ei.generation = sb.generation + 1;
+                    ei.flags = btrfs::EXTENT_FLAG_TREE_BLOCK;
 
-                eir.type = btrfs::key_type::TREE_BLOCK_REF;
-                eir.offset = h.owner;
+                    auto& eir = *(btrfs::extent_inline_ref*)(sp.data() + sizeof(btrfs::extent_item));
+
+                    eir.type = btrfs::key_type::TREE_BLOCK_REF;
+                    eir.offset = h.owner;
+                }
             }
 
             if (f.ref_changes.empty())
@@ -654,7 +718,7 @@ static void flush_transaction(fs& f) {
             }
         }
 
-        f.ref_changes = orig_ref_changes;
+        swap(f.ref_changes, orig_ref_changes);
     }
 
     while (!f.ref_changes.empty()) {
