@@ -239,11 +239,14 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
-static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
-                                                  const btrfs::key& key,
-                                                  bool cow, btrfs::key_ptr* parent,
-                                                  uint64_t tree) {
+static pair<string&, uint32_t> find_item2(fs& f, uint64_t addr,
+                                          const btrfs::key& key,
+                                          bool cow, btrfs::key_ptr* parent,
+                                          uint64_t tree) {
     auto& sb = f.dev.sb;
+
+    // FIXME - separate COW and no-COW versions of this, so we can use
+    //         const properly?
 
     if (!f.tree_cache.contains(addr)) {
         auto tree = read_data(f, addr, sb.nodesize);
@@ -260,9 +263,9 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
         f.tree_cache.emplace(make_pair(addr, tree));
     }
 
-    const auto& orig_tree = f.tree_cache.find(addr)->second;
+    auto& orig_tree = f.tree_cache.find(addr)->second;
     const auto& orig_h = *(btrfs::header*)orig_tree.data();
-    const string* tree_ptr;
+    string* tree_ptr;
 
     if (cow && orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
         auto new_addr = allocate_metadata(f, tree);
@@ -327,16 +330,16 @@ static pair<btrfs::key, span<uint8_t>> find_item2(fs& f, uint64_t addr,
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
-        for (const auto& it : items) {
+        for (uint32_t i = 0; i < items.size(); i++) {
+            auto& it = items[i];
+
             if (it.key < key)
                 continue;
 
-            auto item = span((uint8_t*)tree_ptr->data() + sizeof(btrfs::header) + it.offset, it.size);
-
-            return make_pair(it.key, item);
+            return { *tree_ptr, i };
         }
 
-        return make_pair((btrfs::key){ 0xffffffffffffffff, (enum btrfs::key_type)0xff, 0xffffffffffffffff }, span<uint8_t>());
+        return { *tree_ptr, items.size() + 1 };
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
@@ -354,7 +357,17 @@ static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow) {
     auto addr = find_tree_addr(f, tree);
 
-    return find_item2(f, addr, key, cow, nullptr, tree);
+    auto [buf, slot] = find_item2(f, addr, key, cow, nullptr, tree);
+
+    const auto& h = *(btrfs::header*)buf.data();
+
+    if (slot >= h.nritems)
+        return make_pair((btrfs::key){ 0xffffffffffffffff, (enum btrfs::key_type)0xff, 0xffffffffffffffff }, span<uint8_t>());
+
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[slot];
+
+    return { it.key, span((uint8_t*)buf.data() + sizeof(btrfs::header) + it.offset, it.size) };
 }
 
 static uint64_t find_tree_addr(fs& f, uint64_t tree) {
