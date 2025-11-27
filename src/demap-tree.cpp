@@ -5,6 +5,8 @@
 #include <functional>
 #include <print>
 #include <getopt.h>
+#include <string.h>
+#include <assert.h>
 #include "config.h"
 
 import cxxbtrfs;
@@ -519,6 +521,84 @@ static void write_superblocks(fs& f) {
 
         d.f.write((char*)&d.sb, sizeof(d.sb));
     }
+}
+
+static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
+                                 uint32_t size) {
+    auto& sb = f.dev.sb;
+
+    if (size > sb.nodesize - sizeof(btrfs::header) - sizeof(btrfs::item)) {
+        throw formatted_error("insert_item: key {} in tree {:x} would be {} bytes, too big for any tree",
+                              key, tree, size);
+    }
+
+    auto addr = find_tree_addr(f, tree);
+
+    auto [buf, slot] = find_item2(f, addr, key, true, nullptr, tree);
+
+    auto& h = *(btrfs::header*)buf.data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    // FIXME - make sure this works if tree is currently empty
+
+    if (slot < h.nritems && key == items[slot].key) {
+        throw formatted_error("insert_item: key {} in tree {:x} already exists",
+                              key, tree);
+    }
+
+    print("insert_item: looked for {}, found {}\n", key, items[slot].key);
+
+    {
+        unsigned int data_size = 0;
+
+        for (uint32_t i = 0; i < h.nritems; i++) {
+            data_size += items[i].size;
+        }
+
+        unsigned int size_used = data_size + (unsigned int)(h.nritems * sizeof(btrfs::item));
+
+        if (size_used + sizeof(btrfs::item) + size > sb.nodesize - sizeof(btrfs::header))
+            throw runtime_error("insert_item: FIXME - split tree"); // FIXME
+    }
+
+    // insert new btrfs::item
+
+    if (slot < h.nritems) {
+        memmove(&items[slot + 1], &items[slot],
+                (h.nritems - slot) * sizeof(btrfs::item));
+    }
+
+    h.nritems++;
+
+    items[slot].key = key;
+
+    if (size > 0 && slot != h.nritems - 1) {
+        unsigned int to_move = 0;
+
+        // move data around
+
+        uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
+
+        for (unsigned int i = slot + 1; i < h.nritems; i++) {
+            to_move += items[i].size;
+            items[i].offset = items[i].offset - size; // FIXME
+        }
+
+        assert(off >= size + sizeof(btrfs::header));
+
+        memmove(buf.data() + off - size, buf.data() + off, to_move);
+    }
+
+    if (slot == 0)
+        items[slot].offset = (uint32_t)(sb.nodesize - sizeof(btrfs::header) - size);
+    else
+        items[slot].offset = (uint32_t)(items[slot - 1].offset - size);
+
+    items[slot].size = size;
+
+    // FIXME - if first item, update internal nodes (recursively)
+
+    return span((uint8_t*)buf.data() + sizeof(btrfs::header) + items[slot].offset, size);
 }
 
 static void flush_transaction(fs& f) {
