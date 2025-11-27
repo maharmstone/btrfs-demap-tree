@@ -281,7 +281,7 @@ static pair<string&, uint32_t> find_item2(fs& f, uint64_t addr,
         h.generation = sb.generation + 1;
         h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
-        print("allocated metadata to {:x} (was {:x})\n", new_addr, addr);
+        print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, addr, h.owner);
 
         {
             auto [it2, _] = f.ref_changes.emplace(new_addr, ref_change{});
@@ -605,31 +605,82 @@ static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
     // FIXME - update FST (may be recursive)
-    // FIXME - update extent tree (may be recursive)
+    // FIXME - removing extent tree items
     // FIXME - update used value in BG items
 
-    for (auto& rc : f.ref_changes) {
-        if (rc.second.refcount_change < 0)
-            continue;
+    {
+        auto orig_ref_changes = f.ref_changes;
 
-        auto& tree = f.tree_cache.find(rc.first)->second;
-        auto& h = *(btrfs::header*)tree.data();
+        while (true) {
+            decltype(f.ref_changes) local;
 
-        if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
-            continue;
+            swap(local, f.ref_changes);
 
-        print("FIXME - flush_transaction metadata {:x}\n", rc.first);
+            for (auto& rc : local) {
+                print("{:x}\n", rc.first);
 
-        h.flags |= btrfs::HEADER_FLAG_WRITTEN;
+                if (rc.second.refcount_change < 0)
+                    continue;
 
-        calc_tree_csum(h, sb);
+                auto& tree = f.tree_cache.find(rc.first)->second;
+                auto& h = *(btrfs::header*)tree.data();
 
-        write_data(f, h.bytenr, span((uint8_t*)tree.data(), sb.nodesize));
+                if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
+                    continue;
+
+                // add extent tree item
+
+                auto sp = insert_item(f, btrfs::EXTENT_TREE_OBJECTID,
+                                    { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level },
+                                    sizeof(btrfs::extent_item) + sizeof(btrfs::extent_inline_ref));
+
+                auto& ei = *(btrfs::extent_item*)sp.data();
+
+                ei.refs = 1;
+                ei.generation = sb.generation + 1;
+                ei.flags = btrfs::EXTENT_FLAG_TREE_BLOCK;
+
+                auto& eir = *(btrfs::extent_inline_ref*)(sp.data() + sizeof(btrfs::extent_item));
+
+                eir.type = btrfs::key_type::TREE_BLOCK_REF;
+                eir.offset = h.owner;
+            }
+
+            if (f.ref_changes.empty())
+                break;
+
+            for (auto& rc : f.ref_changes) {
+                orig_ref_changes.insert(rc);
+            }
+        }
+
+        f.ref_changes = orig_ref_changes;
     }
 
-    f.ref_changes.clear();
+    while (!f.ref_changes.empty()) {
+        decltype(f.ref_changes) local;
 
-    // FIXME - root tree always needs to be COWed
+        swap(local, f.ref_changes);
+
+        for (auto& rc : local) {
+            if (rc.second.refcount_change < 0)
+                continue;
+
+            auto& tree = f.tree_cache.find(rc.first)->second;
+            auto& h = *(btrfs::header*)tree.data();
+
+            if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
+                continue;
+
+            print("flush_transaction metadata {:x}\n", rc.first);
+
+            h.flags |= btrfs::HEADER_FLAG_WRITTEN;
+
+            calc_tree_csum(h, sb);
+
+            write_data(f, h.bytenr, span((uint8_t*)tree.data(), sb.nodesize));
+        }
+    }
 
     sb.generation++;
 
