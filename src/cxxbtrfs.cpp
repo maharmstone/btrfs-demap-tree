@@ -120,6 +120,36 @@ public:
         return *this;
     }
 
+    little_endian<T>& operator +=(integral auto b) {
+        *this = (T)*this + b;
+
+        return *this;
+    }
+
+    little_endian<T>& operator -=(integral auto b) {
+        *this = (T)*this - b;
+
+        return *this;
+    }
+
+    little_endian<T>& operator *=(integral auto b) {
+        *this = (T)*this * b;
+
+        return *this;
+    }
+
+    little_endian<T>& operator /=(integral auto b) {
+        *this = (T)*this / b;
+
+        return *this;
+    }
+
+    little_endian<T>& operator %=(integral auto b) {
+        *this = (T)*this % b;
+
+        return *this;
+    }
+
 private:
     uint8_t val[sizeof(T)];
 } __attribute__((packed));

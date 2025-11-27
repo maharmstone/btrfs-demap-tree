@@ -581,7 +581,7 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
         for (unsigned int i = slot + 1; i < h.nritems; i++) {
             to_move += items[i].size;
-            items[i].offset = items[i].offset - size; // FIXME
+            items[i].offset -= size;
         }
 
         assert(off >= size + sizeof(btrfs::header));
