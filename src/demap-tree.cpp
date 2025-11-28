@@ -246,8 +246,8 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
-static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
-                       bool cow, btrfs::key_ptr* parent, uint64_t tree) {
+static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
+                       uint64_t tree, path& p) {
     auto& sb = f.dev.sb;
 
     // FIXME - separate COW and no-COW versions of this, so we can use
@@ -299,9 +299,12 @@ static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
             it2->second.refcount_change = 1;
         }
 
-        if (parent) {
-            parent->blockptr = h.bytenr;
-            parent->generation = sb.generation + 1;
+        if (!p.bufs[h.level + 1].empty()) { // FIXME - and level not maxed out
+            auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[h.level + 1].data() + sizeof(btrfs::header));
+            auto& parent = items[p.slots[h.level + 1]];
+
+            parent.blockptr = h.bytenr;
+            parent.generation = sb.generation + 1;
         } else {
             if (tree == btrfs::CHUNK_TREE_OBJECTID) {
                 sb.chunk_root = h.bytenr;
@@ -339,12 +342,10 @@ static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
 
     const auto& h = *(btrfs::header*)tree_ptr->data();
 
+    p.bufs[h.level] = span((uint8_t*)tree_ptr->data(), sb.nodesize);
+
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
-
-        path p;
-
-        p.bufs[0] = span((uint8_t*)tree_ptr->data(), sb.nodesize);
 
         for (uint32_t i = 0; i < items.size(); i++) {
             auto& it = items[i];
@@ -354,30 +355,32 @@ static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
 
             p.slots[0] = i;
 
-            return p;
+            return;
         }
 
         p.slots[0] = items.size() + 1;
-
-        return p;
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
         for (size_t i = 0; i < h.nritems - 1; i++) {
-            if (key >= items[i].key && key < items[i + 1].key)
-                return find_item2(f, items[i].blockptr, key, cow, &items[i], tree);
+            if (key >= items[i].key && key < items[i + 1].key) {
+                p.slots[h.level] = i;
+                find_item2(f, items[i].blockptr, key, cow, tree, p);
+                return;
+            }
         }
 
-        return find_item2(f, items[h.nritems - 1].blockptr, key, cow,
-                          &items[h.nritems - 1], tree);
+        p.slots[h.level] = h.nritems - 1;
+        find_item2(f, items[h.nritems - 1].blockptr, key, cow, tree, p);
     }
 }
 
 static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow) {
     auto addr = find_tree_addr(f, tree);
+    path p;
 
-    auto p = find_item2(f, addr, key, cow, nullptr, tree);
+    find_item2(f, addr, key, cow, tree, p);
 
     const auto& h = *(btrfs::header*)p.bufs[0].data();
 
@@ -551,8 +554,9 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
     }
 
     auto addr = find_tree_addr(f, tree);
+    path p;
 
-    auto p = find_item2(f, addr, key, true, nullptr, tree);
+    find_item2(f, addr, key, true, tree, p);
 
     auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
@@ -625,7 +629,9 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
     print("delete_item: tree {:x}, key {}\n", tree, key);
 
     auto addr = find_tree_addr(f, tree);
-    auto p = find_item2(f, addr, key, true, nullptr, tree);
+    path p;
+
+    find_item2(f, addr, key, true, tree, p);
 
     auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
