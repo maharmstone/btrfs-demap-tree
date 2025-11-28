@@ -50,7 +50,7 @@ struct fs {
     map<uint64_t, ref_change> ref_changes;
 };
 
-static uint64_t find_tree_addr(fs& f, uint64_t tree);
+static pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree);
 static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
 
@@ -151,7 +151,7 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
     return ret;
 }
 
-static void read_metadata(fs& f, uint64_t addr) {
+static void read_metadata(fs& f, uint64_t addr, uint8_t level) {
     auto& sb = f.dev.sb;
 
     if (f.tree_cache.contains(addr))
@@ -161,20 +161,23 @@ static void read_metadata(fs& f, uint64_t addr) {
 
     const auto& h = *(btrfs::header*)tree.data();
 
-    // FIXME - also die on generation or level mismatch
+    // FIXME - also die on generation mismatch
     // FIXME - check csums
     // FIXME - use other chunk stripe if verification fails
 
     if (h.bytenr != addr)
         throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
 
+    if (h.level != level)
+        throw formatted_error("Level mismatch: expected {:x}, got {:x}", level, h.level);
+
     f.tree_cache.emplace(make_pair(addr, tree));
 }
 
-static void walk_tree2(fs& f, uint64_t addr,
+static void walk_tree2(fs& f, uint64_t addr, uint8_t level,
                        const function<bool(const btrfs::key&, span<const uint8_t>)>& func,
                        optional<btrfs::key> from) {
-    read_metadata(f, addr);
+    read_metadata(f, addr, level);
 
     auto& tree = f.tree_cache.find(addr)->second;
     const auto& h = *(btrfs::header*)tree.data();
@@ -200,7 +203,7 @@ static void walk_tree2(fs& f, uint64_t addr,
             if (from.has_value() && i < items.size() - 1 && *from < items[i + 1].key)
                 continue;
 
-            walk_tree2(f, it.blockptr, func, from);
+            walk_tree2(f, it.blockptr, level - 1, func, from);
         }
     }
 }
@@ -325,14 +328,14 @@ static string& cow_tree(fs& f, uint64_t addr, path& p) {
         return orig_tree;
 }
 
-static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
-                       uint64_t tree, path& p) {
+static void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& key,
+                       bool cow, uint64_t tree, path& p) {
     auto& sb = f.dev.sb;
 
     // FIXME - separate COW and no-COW versions of this, so we can use
     //         const properly?
 
-    read_metadata(f, addr);
+    read_metadata(f, addr, level);
 
     string* tree_ptr;
 
@@ -366,22 +369,23 @@ static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
         for (size_t i = 0; i < h.nritems - 1; i++) {
             if (key >= items[i].key && key < items[i + 1].key) {
                 p.slots[h.level] = i;
-                find_item2(f, items[i].blockptr, key, cow, tree, p);
+                find_item2(f, items[i].blockptr, level - 1, key, cow, tree, p);
                 return;
             }
         }
 
         p.slots[h.level] = h.nritems - 1;
-        find_item2(f, items[h.nritems - 1].blockptr, key, cow, tree, p);
+        find_item2(f, items[h.nritems - 1].blockptr, level - 1, key, cow,
+                   tree, p);
     }
 }
 
 static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow) {
-    auto addr = find_tree_addr(f, tree);
+    auto [addr, level] = find_tree_addr(f, tree);
     path p;
 
-    find_item2(f, addr, key, cow, tree, p);
+    find_item2(f, addr, level, key, cow, tree, p);
 
     const auto& h = *(btrfs::header*)p.bufs[0].data();
 
@@ -394,13 +398,13 @@ static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
     return { it.key, span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset, it.size) };
 }
 
-static uint64_t find_tree_addr(fs& f, uint64_t tree) {
+static pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
 
     if (tree == btrfs::CHUNK_TREE_OBJECTID)
-        return sb.chunk_root;
+        return { sb.chunk_root, sb.chunk_root_level };
     else if (tree == btrfs::ROOT_TREE_OBJECTID)
-        return sb.root;
+        return { sb.root, sb.root_level };
 
     auto [key, data] = find_item(f, btrfs::ROOT_TREE_OBJECTID, { tree, btrfs::key_type::ROOT_ITEM, 0 }, false);
 
@@ -414,14 +418,14 @@ static uint64_t find_tree_addr(fs& f, uint64_t tree) {
 
     const auto& ri = *(btrfs::root_item*)data.data();
 
-    return ri.bytenr;
+    return { ri.bytenr, ri.level };
 }
 
 static void walk_tree(fs& f, uint64_t tree, optional<btrfs::key> from,
                       const function<bool(const btrfs::key&, span<const uint8_t>)>& func) {
-    auto addr = find_tree_addr(f, tree);
+    auto [addr, level] = find_tree_addr(f, tree);
 
-    walk_tree2(f, addr, func, from);
+    walk_tree2(f, addr, level, func, from);
 }
 
 static void load_chunks(fs& f) {
@@ -554,10 +558,10 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
                               key, tree, size);
     }
 
-    auto addr = find_tree_addr(f, tree);
+    auto [addr, level] = find_tree_addr(f, tree);
     path p;
 
-    find_item2(f, addr, key, true, tree, p);
+    find_item2(f, addr, level, key, true, tree, p);
 
     auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
@@ -629,10 +633,10 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
 
     print("delete_item: tree {:x}, key {}\n", tree, key);
 
-    auto addr = find_tree_addr(f, tree);
+    auto [addr, level] = find_tree_addr(f, tree);
     path p;
 
-    find_item2(f, addr, key, true, tree, p);
+    find_item2(f, addr, level, key, true, tree, p);
 
     auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
