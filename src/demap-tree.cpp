@@ -727,7 +727,7 @@ static void prev_item(fs& f, path& p, bool cow) {
     throw formatted_error("prev_item failed");
 }
 
-static void change_key(fs& f, path& p, const btrfs::key& key) {
+static void change_key(path& p, const btrfs::key& key) {
     const auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
@@ -753,13 +753,13 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
     if (it.key.objectid == start && it.key.offset == len) // remove whole entry
         delete_item2(f, p);
     else if (it.key.objectid == start) // remove beginning
-        change_key(f, p, { start + len, it.key.type, it.key.offset - len });
+        change_key(p, { start + len, it.key.type, it.key.offset - len });
     else if (it.key.objectid + it.key.offset == start + len) // remove end
-        change_key(f, p, { it.key.objectid, it.key.type, it.key.offset - len });
+        change_key(p, { it.key.objectid, it.key.type, it.key.offset - len });
     else { // remove middle
         auto orig_key = it.key;
 
-        change_key(f, p, { it.key.objectid, it.key.type, start - it.key.objectid });
+        change_key(p, { it.key.objectid, it.key.type, start - it.key.objectid });
 
         btrfs::key new_key{ start + len, btrfs::key_type::FREE_SPACE_EXTENT,
                             orig_key.objectid + orig_key.offset - start - len };
