@@ -685,6 +685,132 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
     delete_item2(f, p);
 }
 
+static void prev_item(fs& f, path& p, bool cow) {
+    if (p.slots[0] != 0) {
+        if (cow)
+            cow_tree(f, p, 0); // FIXME - also COW parents
+
+        p.slots[0]--;
+        return;
+    }
+
+    for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
+        if (p.bufs[i].empty())
+            break;
+
+        if (p.slots[i] == 0)
+            continue;
+
+        p.slots[i]--;
+
+        for (auto j = (int8_t)i; j > 0; j--) {
+            auto& sb = f.dev.sb;
+            const auto& h = *(btrfs::header*)p.bufs[j].data();
+            auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+
+            read_metadata(f, items[p.slots[j]].blockptr, j);
+
+            p.bufs[h.level] = span((uint8_t*)f.tree_cache.find(items[p.slots[j]].blockptr)->second.data(),
+                                   sb.nodesize);
+
+            if (cow)
+                cow_tree(f, p, j); // FIXME - also COW parents
+
+            const auto& h2 = *(btrfs::header*)p.bufs[j - 1].data();
+
+            p.slots[j - 1] = h2.nritems - 1;
+        }
+
+        return;
+    }
+
+    throw formatted_error("prev_item failed");
+}
+
+static void change_key(fs& f, path& p, const btrfs::key& key) {
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    print("change_key {} -> {}\n", it.key, key);
+
+    it.key = key;
+
+    // FIXME - if first item, change key of parents (recursively)
+}
+
+static void remove_from_free_space2(fs& f, path& p, uint64_t start,
+                                    uint64_t len) {
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    print("remove_from_free_space2: carve out {:x},{:x} from {}\n", start, len, it.key);
+
+    assert(it.key.objectid <= start);
+    assert(it.key.objectid + it.key.offset >= start + len);
+
+    if (it.key.objectid == start && it.key.offset == len) // remove whole entry
+        delete_item2(f, p);
+    else if (it.key.objectid == start) // remove beginning
+        change_key(f, p, { start + len, it.key.type, it.key.offset - len });
+    else if (it.key.objectid + it.key.offset == start + len) // remove end
+        change_key(f, p, { it.key.objectid, it.key.type, it.key.offset - len });
+    else { // remove middle
+        auto orig_key = it.key;
+
+        change_key(f, p, { it.key.objectid, it.key.type, start - it.key.objectid });
+
+        btrfs::key new_key{ start + len, btrfs::key_type::FREE_SPACE_EXTENT,
+                            orig_key.objectid + orig_key.offset - start - len };
+        insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID, new_key, 0);
+    }
+}
+
+static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
+    print("remove_from_free_space: {:x}, {:x}\n", start, len);
+
+    // FIXME - bitmaps
+
+    // FIXME - adjust free_space_info
+
+    auto [addr, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
+    path p;
+    btrfs::key key{start, btrfs::key_type::FREE_SPACE_EXTENT, 0};
+
+    find_item2(f, addr, level, key, true, btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+    {
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+        if (p.slots[0] < h.nritems) {
+            auto& it = items[p.slots[0]];
+
+            if (it.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
+                it.key.objectid <= start) {
+                remove_from_free_space2(f, p, start, len);
+                return;
+            }
+        }
+    }
+
+    prev_item(f, p, true);
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    if (it.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
+        it.key.objectid <= start) {
+        remove_from_free_space2(f, p, start, len);
+        return;
+    }
+
+    throw formatted_error("remove_from_free_space: error carving out {:x},{:x}\n",
+                          start, len);
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
@@ -718,6 +844,8 @@ static void flush_transaction(fs& f) {
                     delete_item(f, btrfs::EXTENT_TREE_OBJECTID,
                                 { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
                 } else {
+                    remove_from_free_space(f, h.bytenr, sb.nodesize);
+
                     // add extent tree item
 
                     auto sp = insert_item(f, btrfs::EXTENT_TREE_OBJECTID,
@@ -905,6 +1033,8 @@ static void demap(const filesystem::path& fn) {
 
     if (!(sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE))
         throw runtime_error("remap-tree incompat flag not set");
+
+    // FIXME - double-check that FST and BGT flags are set
 
     if (sb.num_devices != 1)
         throw runtime_error("multi-device support not yet implemented"); // FIXME
