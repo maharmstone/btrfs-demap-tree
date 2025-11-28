@@ -254,7 +254,7 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
-static void cow_tree(fs& f, uint64_t addr, path& p, uint8_t level) {
+static void cow_tree(fs& f, path& p, uint8_t level) {
     auto& sb = f.dev.sb;
     const auto& orig_h = *(btrfs::header*)p.bufs[level].data();
 
@@ -276,10 +276,10 @@ static void cow_tree(fs& f, uint64_t addr, path& p, uint8_t level) {
     h.generation = sb.generation + 1;
     h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
-    print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, addr, h.owner);
+    print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, orig_h.bytenr, h.owner);
 
     {
-        auto [it2, inserted] = f.ref_changes.emplace(addr, ref_change{-1});
+        auto [it2, inserted] = f.ref_changes.emplace(orig_h.bytenr, ref_change{-1});
 
         if (!inserted)
             it2->second.refcount_change--;
@@ -343,7 +343,7 @@ static void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& ke
     p.bufs[level] = span((uint8_t*)f.tree_cache.find(addr)->second.data(), sb.nodesize);
 
     if (cow)
-        cow_tree(f, addr, p, level);
+        cow_tree(f, p, level);
 
     const auto& h = *(btrfs::header*)p.bufs[level].data();
 
