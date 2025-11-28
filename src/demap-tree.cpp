@@ -739,6 +739,28 @@ static void change_key(path& p, const btrfs::key& key) {
     // FIXME - if first item, change key of parents (recursively)
 }
 
+static void change_fst_extent_count(fs& f, uint64_t start, int32_t change) {
+    auto [off, c] = find_chunk(f, start);
+
+    btrfs::key key{off, btrfs::key_type::FREE_SPACE_INFO, c.c.length};
+
+    auto [found_key, sp] = find_item(f, btrfs::FREE_SPACE_TREE_OBJECTID, key, true);
+
+    if (found_key != key) {
+        throw formatted_error("change_fst_extent_count: looked for {}, found {}",
+                              key, found_key);
+    }
+
+    if (sp.size() < sizeof(btrfs::free_space_info)) {
+        throw formatted_error("change_fst_extent_count: {} was {} bytes, expected {}",
+                              key, sp.size(), sizeof(btrfs::free_space_info));
+    }
+
+    auto& fsi = *(btrfs::free_space_info*)sp.data();
+
+    fsi.extent_count += change;
+}
+
 static void remove_from_free_space2(fs& f, path& p, uint64_t start,
                                     uint64_t len) {
     const auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -750,9 +772,11 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
     assert(it.key.objectid <= start);
     assert(it.key.objectid + it.key.offset >= start + len);
 
-    if (it.key.objectid == start && it.key.offset == len) // remove whole entry
+    if (it.key.objectid == start && it.key.offset == len) { // remove whole entry
         delete_item2(f, p);
-    else if (it.key.objectid == start) // remove beginning
+
+        change_fst_extent_count(f, start, -1);
+    } else if (it.key.objectid == start) // remove beginning
         change_key(p, { start + len, it.key.type, it.key.offset - len });
     else if (it.key.objectid + it.key.offset == start + len) // remove end
         change_key(p, { it.key.objectid, it.key.type, it.key.offset - len });
@@ -764,6 +788,8 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
         btrfs::key new_key{ start + len, btrfs::key_type::FREE_SPACE_EXTENT,
                             orig_key.objectid + orig_key.offset - start - len };
         insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID, new_key, 0);
+
+        change_fst_extent_count(f, start, 1);
     }
 }
 
@@ -771,8 +797,6 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
     print("remove_from_free_space: {:x}, {:x}\n", start, len);
 
     // FIXME - bitmaps
-
-    // FIXME - adjust free_space_info
 
     auto [addr, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
     path p;
