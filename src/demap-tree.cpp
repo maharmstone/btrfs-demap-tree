@@ -37,8 +37,8 @@ struct ref_change {
 };
 
 struct path {
-    span<uint8_t> buf;
-    uint32_t slot;
+    array<span<uint8_t>, btrfs::MAX_LEVEL> bufs;
+    array<uint32_t, btrfs::MAX_LEVEL> slots;
 };
 
 struct fs {
@@ -344,7 +344,7 @@ static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
 
         path p;
 
-        p.buf = span((uint8_t*)tree_ptr->data(), sb.nodesize);
+        p.bufs[0] = span((uint8_t*)tree_ptr->data(), sb.nodesize);
 
         for (uint32_t i = 0; i < items.size(); i++) {
             auto& it = items[i];
@@ -352,12 +352,12 @@ static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
             if (it.key < key)
                 continue;
 
-            p.slot = i;
+            p.slots[0] = i;
 
             return p;
         }
 
-        p.slot = items.size() + 1;
+        p.slots[0] = items.size() + 1;
 
         return p;
     } else {
@@ -379,15 +379,15 @@ static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
 
     auto p = find_item2(f, addr, key, cow, nullptr, tree);
 
-    const auto& h = *(btrfs::header*)p.buf.data();
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
 
-    if (p.slot >= h.nritems)
+    if (p.slots[0] >= h.nritems)
         return make_pair((btrfs::key){ 0xffffffffffffffff, (enum btrfs::key_type)0xff, 0xffffffffffffffff }, span<uint8_t>());
 
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[p.slot];
+    auto& it = items[p.slots[0]];
 
-    return { it.key, span((uint8_t*)p.buf.data() + sizeof(btrfs::header) + it.offset, it.size) };
+    return { it.key, span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset, it.size) };
 }
 
 static uint64_t find_tree_addr(fs& f, uint64_t tree) {
@@ -554,17 +554,17 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     auto p = find_item2(f, addr, key, true, nullptr, tree);
 
-    auto& h = *(btrfs::header*)p.buf.data();
+    auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     // FIXME - make sure this works if tree is currently empty
 
-    if (p.slot < h.nritems && key == items[p.slot].key) {
+    if (p.slots[0] < h.nritems && key == items[p.slots[0]].key) {
         throw formatted_error("insert_item: key {} in tree {:x} already exists",
                               key, tree);
     }
 
-    print("insert_item: looked for {}, found {}\n", key, items[p.slot].key);
+    print("insert_item: looked for {}, found {}\n", key, items[p.slots[0]].key);
 
     {
         unsigned int data_size = 0;
@@ -581,42 +581,42 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     // insert new btrfs::item
 
-    if (p.slot < h.nritems) {
-        memmove(&items[p.slot + 1], &items[p.slot],
-                (h.nritems - p.slot) * sizeof(btrfs::item));
+    if (p.slots[0] < h.nritems) {
+        memmove(&items[p.slots[0] + 1], &items[p.slots[0]],
+                (h.nritems - p.slots[0]) * sizeof(btrfs::item));
     }
 
     h.nritems++;
 
-    items[p.slot].key = key;
+    items[p.slots[0]].key = key;
 
-    if (size > 0 && p.slot != h.nritems - 1) {
+    if (size > 0 && p.slots[0] != h.nritems - 1) {
         unsigned int to_move = 0;
 
         // move data around
 
         uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
 
-        for (unsigned int i = p.slot + 1; i < h.nritems; i++) {
+        for (unsigned int i = p.slots[0] + 1; i < h.nritems; i++) {
             to_move += items[i].size;
             items[i].offset -= size;
         }
 
         assert(off >= size + sizeof(btrfs::header));
 
-        memmove(p.buf.data() + off - size, p.buf.data() + off, to_move);
+        memmove(p.bufs[0].data() + off - size, p.bufs[0].data() + off, to_move);
     }
 
-    if (p.slot == 0)
-        items[p.slot].offset = (uint32_t)(sb.nodesize - sizeof(btrfs::header) - size);
+    if (p.slots[0] == 0)
+        items[p.slots[0]].offset = (uint32_t)(sb.nodesize - sizeof(btrfs::header) - size);
     else
-        items[p.slot].offset = (uint32_t)(items[p.slot - 1].offset - size);
+        items[p.slots[0]].offset = (uint32_t)(items[p.slots[0] - 1].offset - size);
 
-    items[p.slot].size = size;
+    items[p.slots[0]].size = size;
 
     // FIXME - if first item, update internal nodes (recursively)
 
-    return span((uint8_t*)p.buf.data() + sizeof(btrfs::header) + items[p.slot].offset, size);
+    return span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + items[p.slots[0]].offset, size);
 }
 
 static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
@@ -627,39 +627,39 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
     auto addr = find_tree_addr(f, tree);
     auto p = find_item2(f, addr, key, true, nullptr, tree);
 
-    auto& h = *(btrfs::header*)p.buf.data();
+    auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
-    if (p.slot >= h.nritems || key != items[p.slot].key) {
+    if (p.slots[0] >= h.nritems || key != items[p.slots[0]].key) {
         throw formatted_error("delete_item: key {} in tree {:x} does not exist",
                               key, tree);
     }
 
     // move data
 
-    if (items[p.slot].size != 0) {
+    if (items[p.slots[0]].size != 0) {
         unsigned int data_size = 0, after_item = 0;
 
         for (unsigned int i = 0; i < h.nritems; i++) {
             data_size += items[i].size;
 
-            if (i > p.slot)
+            if (i > p.slots[0])
                 after_item += items[i].size;
         }
 
-        memmove(p.buf.data() + sb.nodesize - data_size + items[p.slot].size,
-                p.buf.data() + sb.nodesize - data_size,
+        memmove(p.bufs[0].data() + sb.nodesize - data_size + items[p.slots[0]].size,
+                p.bufs[0].data() + sb.nodesize - data_size,
                 after_item);
 
-        for (unsigned int i = p.slot + 1; i < h.nritems; i++) {
-            items[i].offset += (uint32_t)items[p.slot].size; // FIXME - make it so cast not needed
+        for (unsigned int i = p.slots[0] + 1; i < h.nritems; i++) {
+            items[i].offset += (uint32_t)items[p.slots[0]].size; // FIXME - make it so cast not needed
         }
     }
 
     // adjust items
 
-    memmove(&items[p.slot], &items[p.slot + 1],
-            sizeof(btrfs::item) * (h.nritems - p.slot - 1));
+    memmove(&items[p.slots[0]], &items[p.slots[0] + 1],
+            sizeof(btrfs::item) * (h.nritems - p.slots[0] - 1));
     h.nritems--;
 
     // FIXME - update parents if deleting first item

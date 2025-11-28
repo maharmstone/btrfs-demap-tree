@@ -328,6 +328,8 @@ constexpr uint64_t IOCTL_DEV_REPLACE_STATE_FINISHED = 2;
 constexpr uint64_t IOCTL_DEV_REPLACE_STATE_CANCELED = 3;
 constexpr uint64_t IOCTL_DEV_REPLACE_STATE_SUSPENDED = 4;
 
+constexpr size_t MAX_LEVEL = 8;
+
 struct uuid {
     array<uint8_t, 16> uuid;
 
