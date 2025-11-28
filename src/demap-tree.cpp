@@ -36,6 +36,11 @@ struct ref_change {
     int64_t refcount_change;
 };
 
+struct path {
+    span<uint8_t> buf;
+    uint32_t slot;
+};
+
 struct fs {
     fs(const filesystem::path& fn) : dev(fn) { }
 
@@ -241,10 +246,8 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
-static pair<string&, uint32_t> find_item2(fs& f, uint64_t addr,
-                                          const btrfs::key& key,
-                                          bool cow, btrfs::key_ptr* parent,
-                                          uint64_t tree) {
+static path find_item2(fs& f, uint64_t addr, const btrfs::key& key,
+                       bool cow, btrfs::key_ptr* parent, uint64_t tree) {
     auto& sb = f.dev.sb;
 
     // FIXME - separate COW and no-COW versions of this, so we can use
@@ -339,16 +342,24 @@ static pair<string&, uint32_t> find_item2(fs& f, uint64_t addr,
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
+        path p;
+
+        p.buf = span((uint8_t*)tree_ptr->data(), sb.nodesize);
+
         for (uint32_t i = 0; i < items.size(); i++) {
             auto& it = items[i];
 
             if (it.key < key)
                 continue;
 
-            return { *tree_ptr, i };
+            p.slot = i;
+
+            return p;
         }
 
-        return { *tree_ptr, items.size() + 1 };
+        p.slot = items.size() + 1;
+
+        return p;
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
@@ -366,17 +377,17 @@ static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow) {
     auto addr = find_tree_addr(f, tree);
 
-    auto [buf, slot] = find_item2(f, addr, key, cow, nullptr, tree);
+    auto p = find_item2(f, addr, key, cow, nullptr, tree);
 
-    const auto& h = *(btrfs::header*)buf.data();
+    const auto& h = *(btrfs::header*)p.buf.data();
 
-    if (slot >= h.nritems)
+    if (p.slot >= h.nritems)
         return make_pair((btrfs::key){ 0xffffffffffffffff, (enum btrfs::key_type)0xff, 0xffffffffffffffff }, span<uint8_t>());
 
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[slot];
+    auto& it = items[p.slot];
 
-    return { it.key, span((uint8_t*)buf.data() + sizeof(btrfs::header) + it.offset, it.size) };
+    return { it.key, span((uint8_t*)p.buf.data() + sizeof(btrfs::header) + it.offset, it.size) };
 }
 
 static uint64_t find_tree_addr(fs& f, uint64_t tree) {
@@ -541,19 +552,19 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     auto addr = find_tree_addr(f, tree);
 
-    auto [buf, slot] = find_item2(f, addr, key, true, nullptr, tree);
+    auto p = find_item2(f, addr, key, true, nullptr, tree);
 
-    auto& h = *(btrfs::header*)buf.data();
+    auto& h = *(btrfs::header*)p.buf.data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     // FIXME - make sure this works if tree is currently empty
 
-    if (slot < h.nritems && key == items[slot].key) {
+    if (p.slot < h.nritems && key == items[p.slot].key) {
         throw formatted_error("insert_item: key {} in tree {:x} already exists",
                               key, tree);
     }
 
-    print("insert_item: looked for {}, found {}\n", key, items[slot].key);
+    print("insert_item: looked for {}, found {}\n", key, items[p.slot].key);
 
     {
         unsigned int data_size = 0;
@@ -570,42 +581,42 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     // insert new btrfs::item
 
-    if (slot < h.nritems) {
-        memmove(&items[slot + 1], &items[slot],
-                (h.nritems - slot) * sizeof(btrfs::item));
+    if (p.slot < h.nritems) {
+        memmove(&items[p.slot + 1], &items[p.slot],
+                (h.nritems - p.slot) * sizeof(btrfs::item));
     }
 
     h.nritems++;
 
-    items[slot].key = key;
+    items[p.slot].key = key;
 
-    if (size > 0 && slot != h.nritems - 1) {
+    if (size > 0 && p.slot != h.nritems - 1) {
         unsigned int to_move = 0;
 
         // move data around
 
         uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
 
-        for (unsigned int i = slot + 1; i < h.nritems; i++) {
+        for (unsigned int i = p.slot + 1; i < h.nritems; i++) {
             to_move += items[i].size;
             items[i].offset -= size;
         }
 
         assert(off >= size + sizeof(btrfs::header));
 
-        memmove(buf.data() + off - size, buf.data() + off, to_move);
+        memmove(p.buf.data() + off - size, p.buf.data() + off, to_move);
     }
 
-    if (slot == 0)
-        items[slot].offset = (uint32_t)(sb.nodesize - sizeof(btrfs::header) - size);
+    if (p.slot == 0)
+        items[p.slot].offset = (uint32_t)(sb.nodesize - sizeof(btrfs::header) - size);
     else
-        items[slot].offset = (uint32_t)(items[slot - 1].offset - size);
+        items[p.slot].offset = (uint32_t)(items[p.slot - 1].offset - size);
 
-    items[slot].size = size;
+    items[p.slot].size = size;
 
     // FIXME - if first item, update internal nodes (recursively)
 
-    return span((uint8_t*)buf.data() + sizeof(btrfs::header) + items[slot].offset, size);
+    return span((uint8_t*)p.buf.data() + sizeof(btrfs::header) + items[p.slot].offset, size);
 }
 
 static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
@@ -614,41 +625,41 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
     print("delete_item: tree {:x}, key {}\n", tree, key);
 
     auto addr = find_tree_addr(f, tree);
-    auto [buf, slot] = find_item2(f, addr, key, true, nullptr, tree);
+    auto p = find_item2(f, addr, key, true, nullptr, tree);
 
-    auto& h = *(btrfs::header*)buf.data();
+    auto& h = *(btrfs::header*)p.buf.data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
-    if (slot >= h.nritems || key != items[slot].key) {
+    if (p.slot >= h.nritems || key != items[p.slot].key) {
         throw formatted_error("delete_item: key {} in tree {:x} does not exist",
                               key, tree);
     }
 
     // move data
 
-    if (items[slot].size != 0) {
+    if (items[p.slot].size != 0) {
         unsigned int data_size = 0, after_item = 0;
 
         for (unsigned int i = 0; i < h.nritems; i++) {
             data_size += items[i].size;
 
-            if (i > slot)
+            if (i > p.slot)
                 after_item += items[i].size;
         }
 
-        memmove(buf.data() + sb.nodesize - data_size + items[slot].size,
-                buf.data() + sb.nodesize - data_size,
+        memmove(p.buf.data() + sb.nodesize - data_size + items[p.slot].size,
+                p.buf.data() + sb.nodesize - data_size,
                 after_item);
 
-        for (unsigned int i = slot + 1; i < h.nritems; i++) {
-            items[i].offset += (uint32_t)items[slot].size; // FIXME - make it so cast not needed
+        for (unsigned int i = p.slot + 1; i < h.nritems; i++) {
+            items[i].offset += (uint32_t)items[p.slot].size; // FIXME - make it so cast not needed
         }
     }
 
     // adjust items
 
-    memmove(&items[slot], &items[slot + 1],
-            sizeof(btrfs::item) * (h.nritems - slot - 1));
+    memmove(&items[p.slot], &items[p.slot + 1],
+            sizeof(btrfs::item) * (h.nritems - p.slot - 1));
     h.nritems--;
 
     // FIXME - update parents if deleting first item
