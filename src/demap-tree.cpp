@@ -151,25 +151,30 @@ static string read_data(fs& f, uint64_t addr, uint64_t size) {
     return ret;
 }
 
+static void read_metadata(fs& f, uint64_t addr) {
+    auto& sb = f.dev.sb;
+
+    if (f.tree_cache.contains(addr))
+        return;
+
+    auto tree = read_data(f, addr, sb.nodesize);
+
+    const auto& h = *(btrfs::header*)tree.data();
+
+    // FIXME - also die on generation or level mismatch
+    // FIXME - check csums
+    // FIXME - use other chunk stripe if verification fails
+
+    if (h.bytenr != addr)
+        throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
+
+    f.tree_cache.emplace(make_pair(addr, tree));
+}
+
 static void walk_tree2(fs& f, uint64_t addr,
                        const function<bool(const btrfs::key&, span<const uint8_t>)>& func,
                        optional<btrfs::key> from) {
-    const auto& sb = f.dev.sb;
-
-    if (!f.tree_cache.contains(addr)) {
-        auto tree = read_data(f, addr, sb.nodesize);
-
-        const auto& h = *(btrfs::header*)tree.data();
-
-        // FIXME - also die on generation or level mismatch
-        // FIXME - check csums
-        // FIXME - use other chunk stripe if verification fails
-
-        if (h.bytenr != addr)
-            throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
-
-        f.tree_cache.emplace(make_pair(addr, tree));
-    }
+    read_metadata(f, addr);
 
     auto& tree = f.tree_cache.find(addr)->second;
     const auto& h = *(btrfs::header*)tree.data();
@@ -246,34 +251,13 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
-static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
-                       uint64_t tree, path& p) {
+static string& cow_tree(fs& f, uint64_t addr, path& p) {
     auto& sb = f.dev.sb;
-
-    // FIXME - separate COW and no-COW versions of this, so we can use
-    //         const properly?
-
-    if (!f.tree_cache.contains(addr)) {
-        auto tree = read_data(f, addr, sb.nodesize);
-
-        const auto& h = *(btrfs::header*)tree.data();
-
-        // FIXME - also die on generation or level mismatch
-        // FIXME - check csums
-        // FIXME - use other chunk stripe if verification fails
-
-        if (h.bytenr != addr)
-            throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
-
-        f.tree_cache.emplace(make_pair(addr, tree));
-    }
-
     auto& orig_tree = f.tree_cache.find(addr)->second;
     const auto& orig_h = *(btrfs::header*)orig_tree.data();
-    string* tree_ptr;
 
-    if (cow && orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
-        auto new_addr = allocate_metadata(f, tree);
+    if (orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
+        auto new_addr = allocate_metadata(f, orig_h.owner);
 
         auto [it, _] = f.tree_cache.emplace(new_addr, orig_tree);
 
@@ -306,23 +290,23 @@ static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
             parent.blockptr = h.bytenr;
             parent.generation = sb.generation + 1;
         } else {
-            if (tree == btrfs::CHUNK_TREE_OBJECTID) {
+            if (h.owner == btrfs::CHUNK_TREE_OBJECTID) {
                 sb.chunk_root = h.bytenr;
                 sb.chunk_root_generation = sb.generation + 1;
-            } else if (tree == btrfs::ROOT_TREE_OBJECTID)
+            } else if (h.owner == btrfs::ROOT_TREE_OBJECTID)
                 sb.root = h.bytenr;
             else {
-                btrfs::key key{tree, btrfs::key_type::ROOT_ITEM, 0};
+                btrfs::key key{h.owner, btrfs::key_type::ROOT_ITEM, 0};
 
                 auto [found_key, sp] = find_item(f, btrfs::ROOT_TREE_OBJECTID,
-                                                 key, true);
+                                                key, true);
 
                 if (key.objectid != found_key.objectid || key.type != found_key.type)
                     throw formatted_error("could not find item {} in root tree", key);
 
                 if (sp.size() < sizeof(btrfs::root_item)) {
                     throw formatted_error("{} in root tree was {} bytes, expected {}\n",
-                                          found_key, sp.size(), sizeof(btrfs::root_item));
+                                        found_key, sp.size(), sizeof(btrfs::root_item));
                 }
 
                 auto& ri = reinterpret_cast<btrfs::root_item&>(*sp.data());
@@ -336,9 +320,26 @@ static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
         // FIXME - mark old tree as going away (delayed ref)
         // FIXME - what if COWing snapshotted tree?
 
-        tree_ptr = &new_tree;
+        return new_tree;
     } else
-        tree_ptr = &orig_tree;
+        return orig_tree;
+}
+
+static void find_item2(fs& f, uint64_t addr, const btrfs::key& key, bool cow,
+                       uint64_t tree, path& p) {
+    auto& sb = f.dev.sb;
+
+    // FIXME - separate COW and no-COW versions of this, so we can use
+    //         const properly?
+
+    read_metadata(f, addr);
+
+    string* tree_ptr;
+
+    if (cow)
+        tree_ptr = &cow_tree(f, addr, p);
+    else
+        tree_ptr = &f.tree_cache.find(addr)->second;
 
     const auto& h = *(btrfs::header*)tree_ptr->data();
 
