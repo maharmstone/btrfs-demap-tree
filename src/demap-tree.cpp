@@ -627,23 +627,10 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
     return span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + items[p.slots[0]].offset, size);
 }
 
-static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
+static void delete_item2(fs& f, path& p) {
     auto& sb = f.dev.sb;
-
-    print("delete_item: tree {:x}, key {}\n", tree, key);
-
-    auto [addr, level] = find_tree_addr(f, tree);
-    path p;
-
-    find_item2(f, addr, level, key, true, tree, p);
-
     auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-
-    if (p.slots[0] >= h.nritems || key != items[p.slots[0]].key) {
-        throw formatted_error("delete_item: key {} in tree {:x} does not exist",
-                              key, tree);
-    }
 
     // move data
 
@@ -677,6 +664,25 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
     // FIXME - if nritems is now 0 and not top, remove entry in parent
     // FIXME - adjust levels if internal tree has only one entry
     // FIXME - merging trees
+}
+
+static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
+    print("delete_item: tree {:x}, key {}\n", tree, key);
+
+    auto [addr, level] = find_tree_addr(f, tree);
+    path p;
+
+    find_item2(f, addr, level, key, true, tree, p);
+
+    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    if (p.slots[0] >= h.nritems || key != items[p.slots[0]].key) {
+        throw formatted_error("delete_item: key {} in tree {:x} does not exist",
+                              key, tree);
+    }
+
+    delete_item2(f, p);
 }
 
 static void flush_transaction(fs& f) {
