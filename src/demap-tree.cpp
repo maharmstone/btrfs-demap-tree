@@ -46,7 +46,7 @@ struct fs {
 
     device dev;
     map<uint64_t, chunk_info> chunks;
-    map<uint64_t, string> tree_cache;
+    map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
     map<uint64_t, ref_change> ref_changes;
 };
 
@@ -254,78 +254,81 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
-static string& cow_tree(fs& f, uint64_t addr, path& p) {
+static void cow_tree(fs& f, uint64_t addr, path& p, uint8_t level) {
     auto& sb = f.dev.sb;
-    auto& orig_tree = f.tree_cache.find(addr)->second;
-    const auto& orig_h = *(btrfs::header*)orig_tree.data();
+    const auto& orig_h = *(btrfs::header*)p.bufs[level].data();
 
-    if (orig_h.flags & btrfs::HEADER_FLAG_WRITTEN) {
-        auto new_addr = allocate_metadata(f, orig_h.owner);
+    if (!(orig_h.flags & btrfs::HEADER_FLAG_WRITTEN))
+        return;
 
-        auto [it, _] = f.tree_cache.emplace(new_addr, orig_tree);
+    auto new_addr = allocate_metadata(f, orig_h.owner);
 
-        auto& new_tree = it->second;
-        auto& h = *(btrfs::header*)new_tree.data();
+    auto [it, _] = f.tree_cache.emplace(new_addr, "");
 
-        h.bytenr = new_addr;
-        h.generation = sb.generation + 1;
-        h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
+    auto& new_tree = it->second;
 
-        print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, addr, h.owner);
+    new_tree.resize(sb.nodesize);
+    memcpy(new_tree.data(), p.bufs[level].data(), sb.nodesize);
 
-        {
-            auto [it2, inserted] = f.ref_changes.emplace(addr, ref_change{-1});
+    auto& h = *(btrfs::header*)new_tree.data();
 
-            if (!inserted)
-                it2->second.refcount_change--;
-        }
+    h.bytenr = new_addr;
+    h.generation = sb.generation + 1;
+    h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
-        {
-            auto [it2, _] = f.ref_changes.emplace(new_addr, ref_change{});
+    print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, addr, h.owner);
 
-            it2->second.refcount_change = 1;
-        }
+    {
+        auto [it2, inserted] = f.ref_changes.emplace(addr, ref_change{-1});
 
-        if (!p.bufs[h.level + 1].empty()) { // FIXME - and level not maxed out
-            auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[h.level + 1].data() + sizeof(btrfs::header));
-            auto& parent = items[p.slots[h.level + 1]];
+        if (!inserted)
+            it2->second.refcount_change--;
+    }
 
-            parent.blockptr = h.bytenr;
-            parent.generation = sb.generation + 1;
-        } else {
-            if (h.owner == btrfs::CHUNK_TREE_OBJECTID) {
-                sb.chunk_root = h.bytenr;
-                sb.chunk_root_generation = sb.generation + 1;
-            } else if (h.owner == btrfs::ROOT_TREE_OBJECTID)
-                sb.root = h.bytenr;
-            else {
-                btrfs::key key{h.owner, btrfs::key_type::ROOT_ITEM, 0};
+    {
+        auto [it2, _] = f.ref_changes.emplace(new_addr, ref_change{});
 
-                auto [found_key, sp] = find_item(f, btrfs::ROOT_TREE_OBJECTID,
-                                                key, true);
+        it2->second.refcount_change = 1;
+    }
 
-                if (key.objectid != found_key.objectid || key.type != found_key.type)
-                    throw formatted_error("could not find item {} in root tree", key);
+    if (!p.bufs[h.level + 1].empty()) { // FIXME - and level not maxed out
+        auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[h.level + 1].data() + sizeof(btrfs::header));
+        auto& parent = items[p.slots[h.level + 1]];
 
-                if (sp.size() < sizeof(btrfs::root_item)) {
-                    throw formatted_error("{} in root tree was {} bytes, expected {}\n",
-                                        found_key, sp.size(), sizeof(btrfs::root_item));
-                }
+        parent.blockptr = h.bytenr;
+        parent.generation = sb.generation + 1;
+    } else {
+        if (h.owner == btrfs::CHUNK_TREE_OBJECTID) {
+            sb.chunk_root = h.bytenr;
+            sb.chunk_root_generation = sb.generation + 1;
+        } else if (h.owner == btrfs::ROOT_TREE_OBJECTID)
+            sb.root = h.bytenr;
+        else {
+            btrfs::key key{h.owner, btrfs::key_type::ROOT_ITEM, 0};
 
-                auto& ri = reinterpret_cast<btrfs::root_item&>(*sp.data());
+            auto [found_key, sp] = find_item(f, btrfs::ROOT_TREE_OBJECTID,
+                                            key, true);
 
-                ri.bytenr = h.bytenr;
-                ri.generation = sb.generation + 1;
+            if (key.objectid != found_key.objectid || key.type != found_key.type)
+                throw formatted_error("could not find item {} in root tree", key);
+
+            if (sp.size() < sizeof(btrfs::root_item)) {
+                throw formatted_error("{} in root tree was {} bytes, expected {}\n",
+                                    found_key, sp.size(), sizeof(btrfs::root_item));
             }
+
+            auto& ri = reinterpret_cast<btrfs::root_item&>(*sp.data());
+
+            ri.bytenr = h.bytenr;
+            ri.generation = sb.generation + 1;
         }
+    }
 
-        // FIXME - mark as dirty (delayed ref)
-        // FIXME - mark old tree as going away (delayed ref)
-        // FIXME - what if COWing snapshotted tree?
+    // FIXME - mark as dirty (delayed ref)
+    // FIXME - mark old tree as going away (delayed ref)
+    // FIXME - what if COWing snapshotted tree?
 
-        return new_tree;
-    } else
-        return orig_tree;
+    p.bufs[level] = span((uint8_t*)new_tree.data(), sb.nodesize);
 }
 
 static void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& key,
@@ -337,16 +340,12 @@ static void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& ke
 
     read_metadata(f, addr, level);
 
-    string* tree_ptr;
+    p.bufs[level] = span((uint8_t*)f.tree_cache.find(addr)->second.data(), sb.nodesize);
 
     if (cow)
-        tree_ptr = &cow_tree(f, addr, p);
-    else
-        tree_ptr = &f.tree_cache.find(addr)->second;
+        cow_tree(f, addr, p, level);
 
-    const auto& h = *(btrfs::header*)tree_ptr->data();
-
-    p.bufs[h.level] = span((uint8_t*)tree_ptr->data(), sb.nodesize);
+    const auto& h = *(btrfs::header*)p.bufs[level].data();
 
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
