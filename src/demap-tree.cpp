@@ -276,8 +276,6 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     h.generation = sb.generation + 1;
     h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
-    print("allocated metadata to {:x} (was {:x}) (tree {:x})\n", new_addr, orig_h.bytenr, h.owner);
-
     {
         auto [it2, inserted] = f.ref_changes.emplace(orig_h.bytenr, ref_change{-1});
 
@@ -572,8 +570,6 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
                               key, tree);
     }
 
-    print("insert_item: looked for {}, found {}\n", key, items[p.slots[0]].key);
-
     {
         unsigned int data_size = 0;
 
@@ -667,8 +663,6 @@ static void delete_item2(fs& f, path& p) {
 }
 
 static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
-    print("delete_item: tree {:x}, key {}\n", tree, key);
-
     auto [addr, level] = find_tree_addr(f, tree);
     path p;
 
@@ -736,8 +730,6 @@ static void change_key(path& p, const btrfs::key& key) {
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
-    print("change_key {} -> {}\n", it.key, key);
-
     it.key = key;
 
     // FIXME - if first item, change key of parents (recursively)
@@ -771,8 +763,6 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
-    print("remove_from_free_space2: carve out {:x},{:x} from {}\n", start, len, it.key);
-
     assert(it.key.objectid <= start);
     assert(it.key.objectid + it.key.offset >= start + len);
 
@@ -798,8 +788,6 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
 }
 
 static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
-    print("remove_from_free_space: {:x}, {:x}\n", start, len);
-
     // FIXME - bitmaps
 
     auto [addr, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
@@ -841,8 +829,6 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
 }
 
 static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
-    print("add_to_free_space: {:x}, {:x}\n", start, len);
-
     // FIXME - throw exception if part of range already free
     // FIXME - bitmaps
 
@@ -920,8 +906,6 @@ static void flush_transaction(fs& f) {
             swap(local, f.ref_changes);
 
             for (auto& rc : local) {
-                print("{:x} ({})\n", rc.first, rc.second.refcount_change);
-
                 if (rc.second.refcount_change == 0)
                     continue;
 
@@ -986,8 +970,6 @@ static void flush_transaction(fs& f) {
 
             if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
                 continue;
-
-            print("flush_transaction metadata {:x}\n", rc.first);
 
             h.flags |= btrfs::HEADER_FLAG_WRITTEN;
 
