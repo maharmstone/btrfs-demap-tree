@@ -1014,17 +1014,36 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - adjust dev and sb total_bytes for new stripe
 
     auto key = btrfs::key{ btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM, offset };
+    span<uint8_t> sp;
 
-    auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::CHUNK_TREE_OBJECTID);
+        path p;
 
-    if (key != found_key) {
-        throw formatted_error("allocate_stripe: searched for {}, found {}\n",
-                              key, found_key);
-    }
+        find_item2(f, addr, level, key, true, btrfs::CHUNK_TREE_OBJECTID, p);
 
-    if (sp.size() < offsetof(btrfs::chunk, stripe)) {
-        throw formatted_error("allocate_stripe: {} was {} bytes, expected at least {}",
-                              key, sp.size(), offsetof(btrfs::chunk, stripe));
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        if (p.slots[0] >= h.nritems)
+            throw formatted_error("allocate_stripe: could not find {}", key);
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (key != it.key) {
+            throw formatted_error("allocate_stripe: searched for {}, found {}\n",
+                                  key, it.key);
+        }
+
+        if (it.size != offsetof(btrfs::chunk, stripe)) {
+            throw formatted_error("allocate_stripe: {} was {} bytes, expected {}",
+                                  key, it.size, offsetof(btrfs::chunk, stripe));
+        }
+
+        // FIXME - extend to add stripe
+
+        sp = span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset,
+                  it.size);
     }
 
     auto& c = *(btrfs::chunk*)sp.data();
