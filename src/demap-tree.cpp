@@ -1078,6 +1078,30 @@ static void insert_dev_extent(fs& f, uint64_t devid, uint64_t phys,
     memset(&de.chunk_tree_uuid, 0, sizeof(de.chunk_tree_uuid));
 }
 
+static void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
+    auto& sb = f.dev.sb;
+
+    auto key = btrfs::key{btrfs::DEV_ITEMS_OBJECTID, btrfs::key_type::DEV_ITEM, devid};
+    auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
+
+    if (found_key != key) {
+        throw formatted_error("update_dev_item_bytes_used: found {}, expected {}",
+                              found_key, key);
+    }
+
+    if (sp.size() != sizeof(btrfs::dev_item)) {
+        throw formatted_error("update_dev_item_bytes_used: {} was {} bytes, expected {}",
+                              key, sp.size(), sizeof(btrfs::dev_item));
+    }
+
+    auto& di = *(btrfs::dev_item*)sp.data();
+
+    di.bytes_used += delta;
+
+    if (sb.dev_item.devid == devid)
+        sb.dev_item.bytes_used += delta;
+}
+
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     auto& sb = f.dev.sb;
 
@@ -1085,8 +1109,6 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
     auto phys = find_hole_for_chunk(f, size);
     print("phys = {:x}\n", phys);
-
-    // FIXME - adjust dev and sb total_bytes for new stripe
 
     auto key = btrfs::key{ btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM, offset };
     span<uint8_t> sp;
@@ -1147,8 +1169,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     update_block_group_flags(f, offset, c.length, c.type);
 
     insert_dev_extent(f, sb.dev_item.devid, phys, offset, size);
-
-    // FIXME - update dev item
+    update_dev_item_bytes_used(f, sb.dev_item.devid, size);
 
     flush_transaction(f);
 

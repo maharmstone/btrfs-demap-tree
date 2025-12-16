@@ -238,6 +238,7 @@ constexpr uint64_t BLOCK_GROUP_REMAP = 1 << 12;
 constexpr uint64_t BLOCK_GROUP_STRIPE_REMOVAL_PENDING = 1 << 13;
 
 constexpr uint64_t FIRST_CHUNK_TREE_OBJECTID = 0x100;
+constexpr uint64_t DEV_ITEMS_OBJECTID = 0x1;
 
 constexpr uint64_t DEV_STATS_OBJECTID = 0x0;
 constexpr uint64_t ROOT_TREE_OBJECTID = 0x1;
