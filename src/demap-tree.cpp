@@ -835,6 +835,12 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
                           start, len);
 }
 
+static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
+    print("add_to_free_space: {:x}, {:x}\n", start, len);
+
+    // FIXME
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
@@ -864,6 +870,8 @@ static void flush_transaction(fs& f) {
                     // FIXME - might be snapshotted (refcount > 1)
                     // FIXME - might have non-inline elements
                     // FIXME - might be old-style (i.e. not METADATA_ITEM)
+
+                    add_to_free_space(f, h.bytenr, sb.nodesize);
 
                     delete_item(f, btrfs::EXTENT_TREE_OBJECTID,
                                 { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
