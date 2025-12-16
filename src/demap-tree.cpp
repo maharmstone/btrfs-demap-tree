@@ -984,6 +984,27 @@ static void flush_transaction(fs& f) {
     write_superblocks(f);
 }
 
+static void update_block_group_flags(fs& f, uint64_t offset, uint64_t length,
+                                     uint64_t flags) {
+    auto key = btrfs::key{ offset, btrfs::key_type::BLOCK_GROUP_ITEM, length };
+
+    auto [found_key, sp] = find_item(f, btrfs::BLOCK_GROUP_TREE_OBJECTID,
+                                     key, true);
+    if (key != found_key) {
+        throw formatted_error("update_block_group_flags: searched for {}, found {}\n",
+                              key, found_key);
+    }
+
+    if (sp.size() != sizeof(btrfs::block_group_item_v2)) {
+        throw formatted_error("update_block_group_flags: {} was {} bytes, expected {}",
+                              key, sp.size(), sizeof(btrfs::block_group_item_v2));
+    }
+
+    auto& bgi = *(btrfs::block_group_item*)sp.data();
+
+    bgi.flags = flags;
+}
+
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     print("FIXME - allocate_stripe {:x}, {:x}\n", offset, size);
 
@@ -1006,7 +1027,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
                               key, sp.size(), offsetof(btrfs::chunk, stripe));
     }
 
-    auto& c = *(chunk*)sp.data();
+    auto& c = *(btrfs::chunk*)sp.data();
 
     assert(c.num_stripes == 0);
     assert(c.type & btrfs::BLOCK_GROUP_REMAPPED);
@@ -1021,7 +1042,9 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
     // FIXME - set num_stripes to 1
     // FIXME - add stripe
-    // FIXME - also clear RAID flags in BG item
+
+    update_block_group_flags(f, offset, c.length, c.type);
+
     // FIXME - add dev extent item
 
     flush_transaction(f);
