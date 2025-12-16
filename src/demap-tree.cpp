@@ -1005,7 +1005,65 @@ static void update_block_group_flags(fs& f, uint64_t offset, uint64_t length,
     bgi.flags = flags;
 }
 
+static void extend_item(fs& f, path& p, uint32_t size) {
+    auto& sb = f.dev.sb;
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    if (size > sb.nodesize - sizeof(btrfs::header) - sizeof(btrfs::item)) {
+        throw formatted_error("extend_item: key {} would be {} bytes, too big for any tree",
+                              it.key, size);
+    }
+
+    if (it.size == size)
+        return;
+
+    if (size < it.size) {
+        throw formatted_error("extend_item: size {} for key {} is less than current size {}",
+                              size, it.key, it.size);
+    }
+
+    uint32_t delta = size - it.size;
+
+    uint32_t used = sizeof(btrfs::header) + (sizeof(btrfs::item) * h.nritems);
+
+    for (unsigned int i = 0; i < h.nritems; i++) {
+        used += items[i].size;
+    }
+
+    // FIXME - if now too large for node, move items left or right
+
+    if (used + delta > sb.nodesize)
+        throw runtime_error("extend_item: FIXME - move items left or right");
+
+    // adjust item offsets and move data
+
+    if (p.slots[0] != h.nritems - 1) {
+        unsigned int to_move = 0;
+
+        // move data around
+
+        uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
+
+        for (unsigned int i = p.slots[0]; i < h.nritems; i++) {
+            to_move += items[i].size;
+            items[i].offset -= delta;
+        }
+
+        assert(off >= size + sizeof(btrfs::header));
+
+        memmove(p.bufs[0].data() + off - delta, p.bufs[0].data() + off, to_move);
+    }
+
+    // change item size
+
+    it.size = size;
+}
+
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
+    auto& sb = f.dev.sb;
+
     print("FIXME - allocate_stripe {:x}, {:x}\n", offset, size);
 
     auto phys = find_hole_for_chunk(f, size);
@@ -1040,10 +1098,10 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
                                   key, it.size, offsetof(btrfs::chunk, stripe));
         }
 
-        // FIXME - extend to add stripe
+        extend_item(f, p, offsetof(btrfs::chunk, stripe) + sizeof(btrfs::stripe));
 
-        sp = span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset,
-                  it.size);
+        sp = span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + items[p.slots[0]].offset,
+                  items[p.slots[0]].size);
     }
 
     auto& c = *(btrfs::chunk*)sp.data();
@@ -1059,8 +1117,15 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
                 btrfs::BLOCK_GROUP_RAID5 | btrfs::BLOCK_GROUP_RAID6 |
                 btrfs::BLOCK_GROUP_RAID1C3 | btrfs::BLOCK_GROUP_RAID1C4);
 
-    // FIXME - set num_stripes to 1
-    // FIXME - add stripe
+    // add stripe
+
+    c.num_stripes = 1;
+
+    c.stripe[0].devid = sb.dev_item.devid;
+    c.stripe[0].offset = phys;
+    c.stripe[0].dev_uuid = sb.dev_item.uuid;
+
+    // sync chunk changes to BG
 
     update_block_group_flags(f, offset, c.length, c.type);
 
