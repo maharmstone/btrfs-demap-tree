@@ -996,13 +996,32 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
     auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
 
-    if (key != found_key)
-        throw formatted_error("allocate_stripe: searched for {}, found {}\n", key, found_key);
+    if (key != found_key) {
+        throw formatted_error("allocate_stripe: searched for {}, found {}\n",
+                              key, found_key);
+    }
 
-    // FIXME - clear RAID flags (make SINGLE)
-    // FIXME - also clear RAID flags in BG item
+    if (sp.size() < offsetof(btrfs::chunk, stripe)) {
+        throw formatted_error("allocate_stripe: {} was {} bytes, expected at least {}",
+                              key, sp.size(), offsetof(btrfs::chunk, stripe));
+    }
+
+    auto& c = *(chunk*)sp.data();
+
+    assert(c.num_stripes == 0);
+    assert(c.type & btrfs::BLOCK_GROUP_REMAPPED);
+    assert(!(c.type & btrfs::BLOCK_GROUP_REMAP));
+    assert(!(c.type & btrfs::BLOCK_GROUP_SYSTEM));
+
+    // make chunk SINGLE
+    c.type &= ~(btrfs::BLOCK_GROUP_RAID0 | btrfs::BLOCK_GROUP_RAID1 |
+                btrfs::BLOCK_GROUP_DUP | btrfs::BLOCK_GROUP_RAID10 |
+                btrfs::BLOCK_GROUP_RAID5 | btrfs::BLOCK_GROUP_RAID6 |
+                btrfs::BLOCK_GROUP_RAID1C3 | btrfs::BLOCK_GROUP_RAID1C4);
+
     // FIXME - set num_stripes to 1
     // FIXME - add stripe
+    // FIXME - also clear RAID flags in BG item
     // FIXME - add dev extent item
 
     flush_transaction(f);
