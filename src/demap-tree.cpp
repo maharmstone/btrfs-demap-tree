@@ -1105,10 +1105,7 @@ static void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     auto& sb = f.dev.sb;
 
-    print("FIXME - allocate_stripe {:x}, {:x}\n", offset, size);
-
     auto phys = find_hole_for_chunk(f, size);
-    print("phys = {:x}\n", phys);
 
     auto key = btrfs::key{ btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM, offset };
     span<uint8_t> sp;
