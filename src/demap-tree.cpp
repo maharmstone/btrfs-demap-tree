@@ -1351,6 +1351,8 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
     }
 
     // FIXME - reduce remap_bytes of other BG
+
+    add_to_free_space(f, dest_addr + src_addr - found_key.objectid, length);
 }
 
 static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
