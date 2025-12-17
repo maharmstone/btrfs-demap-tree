@@ -908,13 +908,45 @@ static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
     change_fst_extent_count(f, start, 1);
 }
 
+static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
+    auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
+    auto key = btrfs::key{ address, btrfs::key_type::BLOCK_GROUP_ITEM,
+                           0xffffffffffffffff };
+    path p;
+
+    find_item2(f, addr, level, key, false, btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+
+    if (!prev_item(f, p, true))
+        throw runtime_error("update_block_group_used: prev_item failed");
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    assert(p.slots[0] < h.nritems);
+
+    auto& it = items[p.slots[0]];
+
+    if (it.key.type != btrfs::key_type::BLOCK_GROUP_ITEM ||
+        it.key.objectid > address || it.key.objectid + it.key.offset <= address) {
+        throw formatted_error("update_block_group_used: searched for {}, found {}",
+                              key, it.key);
+    }
+
+    if (it.size != sizeof(btrfs::block_group_item_v2)) {
+        throw formatted_error("update_block_group_used: {} was {} bytes, expected {}",
+                              it.key, it.size, sizeof(btrfs::block_group_item_v2));
+    }
+
+    auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
+
+    bgi.used += delta;
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
     if (f.ref_changes.empty())
         return;
-
-    // FIXME - update used value in BG items
 
     {
         auto orig_ref_changes = f.ref_changes;
@@ -944,6 +976,8 @@ static void flush_transaction(fs& f) {
                         delete_item(f, btrfs::EXTENT_TREE_OBJECTID,
                                     { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
                     }
+
+                    update_block_group_used(f, h.bytenr, -(int64_t)sb.nodesize);
                 } else {
                     remove_from_free_space(f, h.bytenr, sb.nodesize);
 
@@ -965,6 +999,8 @@ static void flush_transaction(fs& f) {
                         eir.type = btrfs::key_type::TREE_BLOCK_REF;
                         eir.offset = h.owner;
                     }
+
+                    update_block_group_used(f, h.bytenr, (int64_t)sb.nodesize);
                 }
             }
 
