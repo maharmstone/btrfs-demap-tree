@@ -227,6 +227,9 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     // allocate from FST
 
     for (auto& [_, c] : f.chunks) {
+        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
+            continue;
+
         if (!(c.c.type & type))
             continue;
 
