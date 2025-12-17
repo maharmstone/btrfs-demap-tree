@@ -898,7 +898,8 @@ static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
-    // FIXME - return early if no change made
+    if (f.ref_changes.empty())
+        return;
 
     // FIXME - update used value in BG items
 
