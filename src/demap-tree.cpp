@@ -1493,7 +1493,7 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
     update_block_group_identity_remap_count(f, src_addr, 1);
 }
 
-static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
+static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length) {
     static const uint64_t MAX_COPY = 0x1000; // FIXME (make option?)
 
     print("process_remap: {:x}, {:x}\n", src_addr, length);
@@ -1513,41 +1513,44 @@ static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
     add_identity_remap(f, src_addr, length);
 
     flush_transaction(f);
+
+    return src_addr + length;
 }
 
 static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
-    auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
-    path p;
     uint64_t cursor = offset;
 
-    find_item2(f, addr, level, { cursor, btrfs::key_type::REMAP, 0 },
-               false, btrfs::REMAP_TREE_OBJECTID, p);
+    while (true) {
+        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+        path p;
 
-    auto& h = *(btrfs::header*)p.bufs[0].data();
-    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        find_item2(f, addr, level, { cursor, btrfs::key_type::REMAP, 0 },
+                   false, btrfs::REMAP_TREE_OBJECTID, p);
 
-    if (p.slots[0] >= h.nritems)
-        return;
+        auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
-    auto& it = items[p.slots[0]];
-
-    if (it.key.objectid >= offset + length)
-        return;
-
-    switch (it.key.type) {
-        case btrfs::key_type::REMAP: {
-            process_remap(f, it.key.objectid, it.key.offset);
+        if (p.slots[0] >= h.nritems)
             return;
+
+        auto& it = items[p.slots[0]];
+
+        if (it.key.objectid >= offset + length)
+            return;
+
+        switch (it.key.type) {
+            case btrfs::key_type::REMAP: {
+                cursor = process_remap(f, it.key.objectid, it.key.offset);
+                break;
+            }
+
+            // FIXME - if IDENTITY_REMAP, skip to next
+
+            default:
+                throw formatted_error("process_remaps: expected REMAP, found {}",
+                                      it.key);
         }
-
-        // FIXME - if IDENTITY_REMAP, skip to next
-
-        default:
-            throw formatted_error("process_remaps: expected REMAP, found {}",
-                                  it.key);
     }
-
-    // FIXME - adjust cursor and loop
 }
 
 static void demap_bg(fs& f, uint64_t offset) {
