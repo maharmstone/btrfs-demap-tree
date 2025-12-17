@@ -1181,6 +1181,60 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - update in-memory chunk item
 }
 
+static void process_remap(fs& f, uint64_t src_addr, uint64_t length,
+                          uint64_t dest_addr) {
+    print("process_remap: {:x}, {:x}, {:x}\n", src_addr, length, dest_addr);
+
+    // FIXME - read data
+    // FIXME - write data
+    // FIXME - remove remap and remap_backref
+    // FIXME - create identity_remap
+    // FIXME - reduce remap_bytes of other BG
+    // FIXME - increase identity_remap_count if necessary
+}
+
+static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
+    auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+    path p;
+    uint64_t cursor = offset;
+
+    find_item2(f, addr, level, { cursor, btrfs::key_type::REMAP, 0 },
+               false, btrfs::REMAP_TREE_OBJECTID, p);
+
+    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    if (p.slots[0] >= h.nritems)
+        return;
+
+    auto& it = items[p.slots[0]];
+
+    if (it.key.objectid >= offset + length)
+        return;
+
+    switch (it.key.type) {
+        case btrfs::key_type::REMAP: {
+            if (it.size != sizeof(btrfs::remap)) {
+                throw formatted_error("process_remaps: {} was {} bytes, expected {}",
+                                    it.key, it.size, sizeof(btrfs::remap));
+            }
+
+            auto& r = *(btrfs::remap*)((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset);
+
+            process_remap(f, it.key.objectid, it.key.offset, r.address);
+            return;
+        }
+
+        // FIXME - if IDENTITY_REMAP, skip to next
+
+        default:
+            throw formatted_error("process_remaps: expected REMAP, found {}",
+                                  it.key);
+    }
+
+    // FIXME - adjust cursor and loop
+}
+
 static void demap_bg(fs& f, uint64_t offset) {
     print("FIXME - demap_bg {:x}\n", offset); // FIXME
 
@@ -1189,13 +1243,12 @@ static void demap_bg(fs& f, uint64_t offset) {
     if (c.c.num_stripes == 0)
         allocate_stripe(f, offset, c.c.length);
 
-    // FIXME - loop through non-identity remaps
-    // FIXME - read data
-    // FIXME - write data
-    // FIXME - reduce remap_bytes of other BG
+    // FIXME - if metadata BG, might be carving out remaps on transaction commit
+
+    process_remaps(f, offset, c.c.length);
 
     // FIXME - when finished:
-    // FIXME - remove remaps, remap_backrefs, and identity_remaps for range
+    // FIXME - remove identity_remaps for range
     // FIXME - clear REMAPPED flag in chunk
     // FIXME - clear REMAPPED flag in BG
 
