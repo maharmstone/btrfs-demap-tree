@@ -385,6 +385,14 @@ static void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& ke
     }
 }
 
+static span<uint8_t> item_span(path& p) {
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    return span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset, it.size);
+}
+
 static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow) {
     auto [addr, level] = find_tree_addr(f, tree);
@@ -400,7 +408,7 @@ static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
-    return { it.key, span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset, it.size) };
+    return { it.key, item_span(p) };
 }
 
 static pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
@@ -628,7 +636,7 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     // FIXME - if first item, update internal nodes (recursively)
 
-    return span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + items[p.slots[0]].offset, size);
+    return item_span(p);
 }
 
 static void delete_item2(fs& f, path& p) {
@@ -1156,8 +1164,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
         extend_item(f, p, offsetof(btrfs::chunk, stripe) + sizeof(btrfs::stripe));
 
-        sp = span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + items[p.slots[0]].offset,
-                  items[p.slots[0]].size);
+        sp = item_span(p);
     }
 
     auto& c = *(btrfs::chunk*)sp.data();
@@ -1264,7 +1271,7 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
                                     it.key, it.size, sizeof(btrfs::remap));
             }
 
-            auto& r = *(btrfs::remap*)((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset);
+            auto& r = *(btrfs::remap*)item_span(p).data();
 
             process_remap(f, it.key.objectid, it.key.offset, r.address);
             return;
