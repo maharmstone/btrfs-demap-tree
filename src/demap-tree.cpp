@@ -1283,6 +1283,42 @@ static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
     }
 }
 
+static void update_block_group_remap_bytes(fs& f, uint64_t address, int64_t delta) {
+    auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
+    auto key = btrfs::key{ address, btrfs::key_type::BLOCK_GROUP_ITEM,
+                           0xffffffffffffffff };
+    path p;
+
+    find_item2(f, addr, level, key, false, btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+
+    if (!prev_item(f, p, true))
+        throw runtime_error("update_block_group_remap_bytes: prev_item failed");
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    assert(p.slots[0] < h.nritems);
+
+    auto& it = items[p.slots[0]];
+
+    if (it.key.type != btrfs::key_type::BLOCK_GROUP_ITEM ||
+        it.key.objectid > address || it.key.objectid + it.key.offset <= address) {
+        throw formatted_error("update_block_group_remap_bytes: searched for {}, found {}",
+                              key, it.key);
+    }
+
+    if (it.size != sizeof(btrfs::block_group_item_v2)) {
+        throw formatted_error("update_block_group_remap_bytes: {} was {} bytes, expected {}",
+                              it.key, it.size, sizeof(btrfs::block_group_item_v2));
+    }
+
+    auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
+
+    assert(delta > 0 || (int64_t)bgi.remap_bytes >= -delta);
+
+    bgi.remap_bytes += delta;
+}
+
 static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
     print("remove_from_remap_tree: {:x}, {:x}\n", src_addr, length);
 
@@ -1350,7 +1386,7 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
                                 length);
     }
 
-    // FIXME - reduce remap_bytes of other BG
+    update_block_group_remap_bytes(f, dest_addr, -length);
 
     add_to_free_space(f, dest_addr + src_addr - found_key.objectid, length);
 }
