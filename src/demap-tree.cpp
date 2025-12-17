@@ -982,6 +982,11 @@ static void flush_transaction(fs& f) {
     sb.generation++;
 
     write_superblocks(f);
+
+    // FIXME - unmark new metadata
+    // FIXME - free old metadata
+    // FIXME - update in-memory FST
+    // FIXME - TRIM? (optional?)
 }
 
 static void update_block_group_flags(fs& f, uint64_t offset, uint64_t length,
@@ -1171,11 +1176,6 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     flush_transaction(f);
 
     // FIXME - update in-memory chunk item
-
-    // FIXME - unmark new metadata
-    // FIXME - free old metadata
-    // FIXME - update in-memory FST
-    // FIXME - TRIM? (optional?)
 }
 
 static void demap_bg(fs& f, uint64_t offset) {
