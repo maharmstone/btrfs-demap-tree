@@ -1393,6 +1393,43 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
     add_to_free_space(f, dest_addr + src_addr - found_key.objectid, length);
 }
 
+static void update_block_group_identity_remap_count(fs& f, uint64_t address,
+                                                    int32_t delta) {
+    auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
+    auto key = btrfs::key{ address, btrfs::key_type::BLOCK_GROUP_ITEM,
+                           0xffffffffffffffff };
+    path p;
+
+    find_item2(f, addr, level, key, false, btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+
+    if (!prev_item(f, p, true))
+        throw runtime_error("update_block_group_identity_remap_count: prev_item failed");
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    assert(p.slots[0] < h.nritems);
+
+    auto& it = items[p.slots[0]];
+
+    if (it.key.type != btrfs::key_type::BLOCK_GROUP_ITEM ||
+        it.key.objectid > address || it.key.objectid + it.key.offset <= address) {
+        throw formatted_error("update_block_group_identity_remap_count: searched for {}, found {}",
+                              key, it.key);
+    }
+
+    if (it.size != sizeof(btrfs::block_group_item_v2)) {
+        throw formatted_error("update_block_group_identity_remap_count: {} was {} bytes, expected {}",
+                              it.key, it.size, sizeof(btrfs::block_group_item_v2));
+    }
+
+    auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
+
+    assert(delta > 0 || (int32_t)bgi.identity_remap_count >= -delta);
+
+    bgi.identity_remap_count += delta;
+}
+
 static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
     {
         auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
@@ -1427,7 +1464,7 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
                         change_key(orig_p, { it2.key.objectid, it2.key.type,
                                              it.key.offset + it2.key.offset });
                         delete_item2(f, p);
-                        // FIXME - reduce identity_remap_count
+                        update_block_group_identity_remap_count(f, src_addr, -1);
                     }
                 }
 
@@ -1453,8 +1490,7 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
 
     insert_item(f, btrfs::REMAP_TREE_OBJECTID,
                 { src_addr, btrfs::key_type::IDENTITY_REMAP, length }, 0);
-
-    // FIXME - increase identity_remap_count
+    update_block_group_identity_remap_count(f, src_addr, 1);
 }
 
 static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
