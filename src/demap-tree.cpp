@@ -828,7 +828,7 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
     }
 
     if (!prev_item(f, p, true))
-        throw formatted_error("remove_from_free_space: prev_item failed");
+        throw runtime_error("remove_from_free_space: prev_item failed");
 
     const auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
