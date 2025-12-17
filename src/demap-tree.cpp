@@ -367,7 +367,7 @@ static void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& ke
             return;
         }
 
-        p.slots[0] = items.size() + 1;
+        p.slots[0] = items.size();
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
@@ -585,6 +585,8 @@ static span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
         throw formatted_error("insert_item: key {} in tree {:x} already exists",
                               key, tree);
     }
+
+    assert(p.slots[0] <= h.nritems);
 
     {
         unsigned int data_size = 0;
