@@ -1032,7 +1032,7 @@ static void extend_item(fs& f, path& p, uint32_t size) {
         used += items[i].size;
     }
 
-    // FIXME - if now too large for node, move items left or right
+    // FIXME - if now too large for node, move items left or right (share this logic with insert_item)
 
     if (used + delta > sb.nodesize)
         throw runtime_error("extend_item: FIXME - move items left or right");
