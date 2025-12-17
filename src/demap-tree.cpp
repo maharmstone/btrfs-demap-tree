@@ -1393,6 +1393,70 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
     add_to_free_space(f, dest_addr + src_addr - found_key.objectid, length);
 }
 
+static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+        path p;
+        btrfs::key key{src_addr, btrfs::key_type::IDENTITY_REMAP, 0};
+
+        find_item2(f, addr, level, key, true, btrfs::REMAP_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+        if (p.slots[0] < h.nritems) {
+            auto& it = items[p.slots[0]];
+
+            if (it.key.type == btrfs::key_type::IDENTITY_REMAP &&
+                it.key.objectid == src_addr + length) {
+                // extend backwards
+
+                change_key(p, { src_addr, it.key.type, it.key.offset + length });
+
+                auto orig_p = p;
+
+                if (prev_item(f, p, true)) {
+                    const auto& h2 = *(btrfs::header*)p.bufs[0].data();
+                    auto items2 = (btrfs::item*)((uint8_t*)&h2 + sizeof(btrfs::header));
+                    auto& it2 = items2[p.slots[0]];
+
+                    if (it2.key.type == btrfs::key_type::IDENTITY_REMAP &&
+                        it2.key.objectid + it2.key.offset == src_addr) {
+                        // bridging
+
+                        change_key(orig_p, { it2.key.objectid, it2.key.type,
+                                             it.key.offset + it2.key.offset });
+                        delete_item2(f, p);
+                        // FIXME - reduce identity_remap_count
+                    }
+                }
+
+                return;
+            }
+        }
+
+        if (prev_item(f, p, true)) {
+            auto& it = items[p.slots[0]];
+
+            if (it.key.type == btrfs::key_type::IDENTITY_REMAP &&
+                it.key.objectid + it.key.offset == src_addr) {
+
+                // extend forwards
+
+                change_key(p, { it.key.objectid, it.key.type, it.key.offset + length });
+                return;
+            }
+        }
+    }
+
+    // new entry
+
+    insert_item(f, btrfs::REMAP_TREE_OBJECTID,
+                { src_addr, btrfs::key_type::IDENTITY_REMAP, length }, 0);
+
+    // FIXME - increase identity_remap_count
+}
+
 static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
     static const uint64_t MAX_COPY = 0x1000; // FIXME (make option?)
 
@@ -1410,9 +1474,7 @@ static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
     // FIXME - write data
 
     remove_from_remap_tree(f, src_addr, length);
-
-    // FIXME - create identity_remap
-    // FIXME - increase identity_remap_count if necessary
+    add_identity_remap(f, src_addr, length);
 
     flush_transaction(f);
 }
@@ -1468,6 +1530,7 @@ static void demap_bg(fs& f, uint64_t offset) {
     // FIXME - remove identity_remaps for range
     // FIXME - clear REMAPPED flag in chunk
     // FIXME - clear REMAPPED flag in BG
+    // FIXME - add FST entries (info and extents)
 }
 
 static void load_fst(fs& f) {
