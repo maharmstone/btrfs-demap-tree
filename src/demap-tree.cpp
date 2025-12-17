@@ -898,6 +898,8 @@ static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
+    // FIXME - return early if no change made
+
     // FIXME - update used value in BG items
 
     {
@@ -1181,16 +1183,49 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - update in-memory chunk item
 }
 
+static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length,
+                                   uint64_t dest_addr) {
+    print("remove_from_remap_tree: {:x}, {:x}, {:x}\n", src_addr, length, dest_addr);
+
+    // FIXME - find remap
+    // FIXME - removing beginning
+    // FIXME - removing end
+    // FIXME - removing middle
+    // FIXME - removing whole thing
+
+    // FIXME - find remap_backref
+    // FIXME - throw if remap and remap_backref don't match
+    // FIXME - removing beginning
+    // FIXME - removing end
+    // FIXME - removing middle
+    // FIXME - removing whole thing
+
+    // FIXME - reduce remap_bytes of other BG
+}
+
 static void process_remap(fs& f, uint64_t src_addr, uint64_t length,
                           uint64_t dest_addr) {
+    static const uint64_t MAX_COPY = 0x1000; // FIXME (make option?)
+
     print("process_remap: {:x}, {:x}, {:x}\n", src_addr, length, dest_addr);
+
+    // FIXME - if metadata, don't split nodes
+    // FIXME - compressed extents need to be contiguous(?)
+
+    if (length > MAX_COPY)
+        length = MAX_COPY;
+
+    // FIXME - avoiding superblock
 
     // FIXME - read data
     // FIXME - write data
-    // FIXME - remove remap and remap_backref
+
+    remove_from_remap_tree(f, src_addr, length, dest_addr);
+
     // FIXME - create identity_remap
-    // FIXME - reduce remap_bytes of other BG
     // FIXME - increase identity_remap_count if necessary
+
+    flush_transaction(f);
 }
 
 static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
@@ -1251,9 +1286,6 @@ static void demap_bg(fs& f, uint64_t offset) {
     // FIXME - remove identity_remaps for range
     // FIXME - clear REMAPPED flag in chunk
     // FIXME - clear REMAPPED flag in BG
-
-    // FIXME - avoiding superblock
-    // FIXME - compressed extents need to be contiguous
 }
 
 static void load_fst(fs& f) {
