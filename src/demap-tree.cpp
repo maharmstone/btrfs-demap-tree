@@ -1236,15 +1236,72 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - update in-memory chunk item
 }
 
-static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length,
-                                   uint64_t dest_addr) {
-    print("remove_from_remap_tree: {:x}, {:x}, {:x}\n", src_addr, length, dest_addr);
+static void remove_from_remap_tree2(fs& f, path& p, uint64_t src_addr,
+                                    uint64_t length) {
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
 
-    // FIXME - find remap
-    // FIXME - removing beginning
-    // FIXME - removing end
-    // FIXME - removing middle
-    // FIXME - removing whole thing
+    if (it.key.objectid == src_addr) {
+        if (it.key.offset == length) {
+            // removing whole thing
+            delete_item2(f, p);
+        } else {
+            // removing beginning
+
+            auto& r = *(btrfs::remap*)item_span(p).data();
+
+            r.address += length;
+
+            change_key(p, {src_addr + length, btrfs::key_type::REMAP, it.key.offset - length});
+        }
+    } else if (it.key.objectid + it.key.offset == src_addr + length) {
+        // removing end
+        change_key(p, {it.key.objectid, btrfs::key_type::REMAP,
+                       it.key.offset - length});
+    } else {
+        // removing middle
+
+        const auto& r1 = *(btrfs::remap*)item_span(p).data();
+        uint64_t dest_addr = r1.address;
+
+        auto orig_key = it.key;
+
+        change_key(p, { it.key.objectid, btrfs::key_type::REMAP,
+                        src_addr - it.key.objectid });
+
+        btrfs::key new_key{ src_addr + length, btrfs::key_type::REMAP,
+                            orig_key.objectid + orig_key.offset - src_addr - length };
+        auto sp = insert_item(f, btrfs::REMAP_TREE_OBJECTID, new_key,
+                              sizeof(btrfs::remap));
+
+        auto& r2 = *(btrfs::remap*)sp.data();
+
+        r2.address = dest_addr + src_addr + length - it.key.objectid;
+    }
+}
+
+static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
+    print("remove_from_remap_tree: {:x}, {:x}\n", src_addr, length);
+
+    auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+    path p;
+    btrfs::key key{src_addr, btrfs::key_type::REMAP, 0xffffffffffffffff};
+
+    find_item2(f, addr, level, key, false, btrfs::REMAP_TREE_OBJECTID, p);
+
+    if (!prev_item(f, p, true))
+        throw formatted_error("remove_from_remap_tree: prev_item failed");
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    assert(it.key.type == btrfs::key_type::REMAP);
+    assert(it.key.objectid <= src_addr);
+    assert(it.key.objectid + it.key.offset >= src_addr + length);
+
+    remove_from_remap_tree2(f, p, src_addr, length);
 
     // FIXME - find remap_backref
     // FIXME - throw if remap and remap_backref don't match
@@ -1256,11 +1313,10 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length,
     // FIXME - reduce remap_bytes of other BG
 }
 
-static void process_remap(fs& f, uint64_t src_addr, uint64_t length,
-                          uint64_t dest_addr) {
+static void process_remap(fs& f, uint64_t src_addr, uint64_t length) {
     static const uint64_t MAX_COPY = 0x1000; // FIXME (make option?)
 
-    print("process_remap: {:x}, {:x}, {:x}\n", src_addr, length, dest_addr);
+    print("process_remap: {:x}, {:x}\n", src_addr, length);
 
     // FIXME - if metadata, don't split nodes
     // FIXME - compressed extents need to be contiguous(?)
@@ -1273,7 +1329,7 @@ static void process_remap(fs& f, uint64_t src_addr, uint64_t length,
     // FIXME - read data
     // FIXME - write data
 
-    remove_from_remap_tree(f, src_addr, length, dest_addr);
+    remove_from_remap_tree(f, src_addr, length);
 
     // FIXME - create identity_remap
     // FIXME - increase identity_remap_count if necessary
@@ -1302,14 +1358,7 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
 
     switch (it.key.type) {
         case btrfs::key_type::REMAP: {
-            if (it.size != sizeof(btrfs::remap)) {
-                throw formatted_error("process_remaps: {} was {} bytes, expected {}",
-                                    it.key, it.size, sizeof(btrfs::remap));
-            }
-
-            auto& r = *(btrfs::remap*)item_span(p).data();
-
-            process_remap(f, it.key.objectid, it.key.offset, r.address);
+            process_remap(f, it.key.objectid, it.key.offset);
             return;
         }
 
