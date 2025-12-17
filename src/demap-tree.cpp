@@ -872,7 +872,9 @@ static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
                 auto orig_p = p;
 
                 if (prev_item(f, p, true)) {
-                    auto& it2 = items[p.slots[0]];
+                    const auto& h2 = *(btrfs::header*)p.bufs[0].data();
+                    auto items2 = (btrfs::item*)((uint8_t*)&h2 + sizeof(btrfs::header));
+                    auto& it2 = items2[p.slots[0]];
 
                     if (it2.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
                         it2.key.objectid + it2.key.offset == start) {
