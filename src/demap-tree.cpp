@@ -33,6 +33,7 @@ struct chunk_info {
 };
 
 struct ref_change {
+    uint64_t tree;
     int64_t refcount_change;
 };
 
@@ -217,12 +218,14 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
             type = btrfs::BLOCK_GROUP_SYSTEM;
             break;
 
+        case btrfs::REMAP_TREE_OBJECTID:
+            type = btrfs::BLOCK_GROUP_REMAP;
+            break;
+
         default:
             type = btrfs::BLOCK_GROUP_METADATA;
             break;
     }
-
-    // FIXME - remap tree in REMAP
 
     // allocate from FST
 
@@ -280,17 +283,14 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
     {
-        auto [it2, inserted] = f.ref_changes.emplace(orig_h.bytenr, ref_change{-1});
+        auto [it2, inserted] = f.ref_changes.emplace(orig_h.bytenr,
+                                                     ref_change{h.owner, -1});
 
         if (!inserted)
             it2->second.refcount_change--;
     }
 
-    {
-        auto [it2, _] = f.ref_changes.emplace(new_addr, ref_change{});
-
-        it2->second.refcount_change = 1;
-    }
+    f.ref_changes.emplace(new_addr, ref_change{h.owner, 1});
 
     if (!p.bufs[h.level + 1].empty()) { // FIXME - and level not maxed out
         auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[h.level + 1].data() + sizeof(btrfs::header));
@@ -322,6 +322,11 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
 
             ri.bytenr = h.bytenr;
             ri.generation = sb.generation + 1;
+
+            if (h.owner == btrfs::REMAP_TREE_OBJECTID) {
+                sb.remap_root = h.bytenr;
+                sb.remap_root_generation = sb.generation + 1;
+            }
         }
     }
 
@@ -927,27 +932,31 @@ static void flush_transaction(fs& f) {
 
                     add_to_free_space(f, h.bytenr, sb.nodesize);
 
-                    delete_item(f, btrfs::EXTENT_TREE_OBJECTID,
-                                { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
+                    if (rc.second.tree != btrfs::REMAP_TREE_OBJECTID) {
+                        delete_item(f, btrfs::EXTENT_TREE_OBJECTID,
+                                    { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
+                    }
                 } else {
                     remove_from_free_space(f, h.bytenr, sb.nodesize);
 
-                    // add extent tree item
+                    if (rc.second.tree != btrfs::REMAP_TREE_OBJECTID) {
+                        // add extent tree item
 
-                    auto sp = insert_item(f, btrfs::EXTENT_TREE_OBJECTID,
-                                          { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level },
-                                          sizeof(btrfs::extent_item) + sizeof(btrfs::extent_inline_ref));
+                        auto sp = insert_item(f, btrfs::EXTENT_TREE_OBJECTID,
+                                              { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level },
+                                              sizeof(btrfs::extent_item) + sizeof(btrfs::extent_inline_ref));
 
-                    auto& ei = *(btrfs::extent_item*)sp.data();
+                        auto& ei = *(btrfs::extent_item*)sp.data();
 
-                    ei.refs = 1;
-                    ei.generation = sb.generation + 1;
-                    ei.flags = btrfs::EXTENT_FLAG_TREE_BLOCK;
+                        ei.refs = 1;
+                        ei.generation = sb.generation + 1;
+                        ei.flags = btrfs::EXTENT_FLAG_TREE_BLOCK;
 
-                    auto& eir = *(btrfs::extent_inline_ref*)(sp.data() + sizeof(btrfs::extent_item));
+                        auto& eir = *(btrfs::extent_inline_ref*)(sp.data() + sizeof(btrfs::extent_item));
 
-                    eir.type = btrfs::key_type::TREE_BLOCK_REF;
-                    eir.offset = h.owner;
+                        eir.type = btrfs::key_type::TREE_BLOCK_REF;
+                        eir.offset = h.owner;
+                    }
                 }
             }
 
