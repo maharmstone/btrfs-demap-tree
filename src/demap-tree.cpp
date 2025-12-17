@@ -1238,13 +1238,13 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     // FIXME - update in-memory chunk item
 }
 
-static void remove_from_remap_tree2(fs& f, path& p, uint64_t src_addr,
+static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
                                     uint64_t length) {
     const auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
-    if (it.key.objectid == src_addr) {
+    if (it.key.objectid == addr) {
         if (it.key.offset == length) {
             // removing whole thing
             delete_item2(f, p);
@@ -1255,62 +1255,100 @@ static void remove_from_remap_tree2(fs& f, path& p, uint64_t src_addr,
 
             r.address += length;
 
-            change_key(p, {src_addr + length, btrfs::key_type::REMAP, it.key.offset - length});
+            change_key(p, {addr + length, it.key.type, it.key.offset - length});
         }
-    } else if (it.key.objectid + it.key.offset == src_addr + length) {
+    } else if (it.key.objectid + it.key.offset == addr + length) {
         // removing end
-        change_key(p, {it.key.objectid, btrfs::key_type::REMAP,
+        change_key(p, {it.key.objectid, it.key.type,
                        it.key.offset - length});
     } else {
         // removing middle
 
         const auto& r1 = *(btrfs::remap*)item_span(p).data();
-        uint64_t dest_addr = r1.address;
+        uint64_t other_addr = r1.address;
 
         auto orig_key = it.key;
 
-        change_key(p, { it.key.objectid, btrfs::key_type::REMAP,
-                        src_addr - it.key.objectid });
+        change_key(p, { it.key.objectid, it.key.type,
+                        addr - it.key.objectid });
 
-        btrfs::key new_key{ src_addr + length, btrfs::key_type::REMAP,
-                            orig_key.objectid + orig_key.offset - src_addr - length };
+        btrfs::key new_key{ addr + length, it.key.type,
+                            orig_key.objectid + orig_key.offset - addr - length };
         auto sp = insert_item(f, btrfs::REMAP_TREE_OBJECTID, new_key,
                               sizeof(btrfs::remap));
 
         auto& r2 = *(btrfs::remap*)sp.data();
 
-        r2.address = dest_addr + src_addr + length - it.key.objectid;
+        r2.address = other_addr + addr + length - it.key.objectid;
     }
 }
 
 static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
     print("remove_from_remap_tree: {:x}, {:x}\n", src_addr, length);
 
-    auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
-    path p;
-    btrfs::key key{src_addr, btrfs::key_type::REMAP, 0xffffffffffffffff};
+    btrfs::key found_key;
+    uint64_t dest_addr;
 
-    find_item2(f, addr, level, key, false, btrfs::REMAP_TREE_OBJECTID, p);
+    // do remap
 
-    if (!prev_item(f, p, true))
-        throw formatted_error("remove_from_remap_tree: prev_item failed");
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+        path p;
+        btrfs::key key{src_addr, btrfs::key_type::REMAP, 0xffffffffffffffff};
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
-    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[p.slots[0]];
+        find_item2(f, addr, level, key, false, btrfs::REMAP_TREE_OBJECTID, p);
 
-    assert(it.key.type == btrfs::key_type::REMAP);
-    assert(it.key.objectid <= src_addr);
-    assert(it.key.objectid + it.key.offset >= src_addr + length);
+        if (!prev_item(f, p, true))
+            throw formatted_error("remove_from_remap_tree: prev_item failed");
 
-    remove_from_remap_tree2(f, p, src_addr, length);
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
 
-    // FIXME - find remap_backref
-    // FIXME - throw if remap and remap_backref don't match
-    // FIXME - removing beginning
-    // FIXME - removing end
-    // FIXME - removing middle
-    // FIXME - removing whole thing
+        assert(it.key.type == btrfs::key_type::REMAP);
+        assert(it.key.objectid <= src_addr);
+        assert(it.key.objectid + it.key.offset >= src_addr + length);
+        assert(it.size == sizeof(btrfs::remap));
+
+        found_key = it.key;
+
+        auto& r = *(btrfs::remap*)item_span(p).data();
+
+        dest_addr = r.address;
+
+        remove_from_remap_tree2(f, p, src_addr, length);
+    }
+
+    // do remap backref
+
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+        path p;
+        btrfs::key key{dest_addr, btrfs::key_type::REMAP_BACKREF, found_key.offset};
+
+        find_item2(f, addr, level, key, true, btrfs::REMAP_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        assert(p.slots[0] < h.nritems);
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (it.key != key) {
+            throw formatted_error("remove_from_remap_tree: found {}, expected {}",
+                                  it.key, key);
+        }
+
+        assert(it.size == sizeof(btrfs::remap));
+
+        auto& r = *(btrfs::remap*)item_span(p).data();
+
+        assert(r.address == found_key.objectid);
+
+        remove_from_remap_tree2(f, p, dest_addr + src_addr - found_key.objectid,
+                                length);
+    }
 
     // FIXME - reduce remap_bytes of other BG
 }
