@@ -699,6 +699,12 @@ static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
     delete_item2(f, p);
 }
 
+static uint32_t path_nritems(const path& p, uint8_t level) {
+    const auto& h = *(btrfs::header*)p.bufs[level].data();
+
+    return h.nritems;
+}
+
 static bool prev_item(fs& f, path& p, bool cow) {
     if (p.slots[0] != 0) {
         if (cow)
@@ -732,9 +738,51 @@ static bool prev_item(fs& f, path& p, bool cow) {
             if (cow)
                 cow_tree(f, p, j); // FIXME - also COW parents
 
-            const auto& h2 = *(btrfs::header*)p.bufs[j - 1].data();
+            p.slots[j - 1] = path_nritems(p, j - 1) - 1;
+        }
 
-            p.slots[j - 1] = h2.nritems - 1;
+        return true;
+    }
+
+    p = orig_p;
+
+    return false;
+}
+
+static bool next_item(fs& f, path& p, bool cow) {
+    if (p.slots[0] != path_nritems(p, 0) - 1) {
+        if (cow)
+            cow_tree(f, p, 0); // FIXME - also COW parents
+
+        p.slots[0]++;
+        return true;
+    }
+
+    auto orig_p = p;
+
+    for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
+        if (p.bufs[i].empty())
+            break;
+
+        if (p.slots[i] == path_nritems(p, i) - 1)
+            continue;
+
+        p.slots[i]++;
+
+        for (auto j = (int8_t)i; j > 0; j--) {
+            auto& sb = f.dev.sb;
+            const auto& h = *(btrfs::header*)p.bufs[j].data();
+            auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+
+            read_metadata(f, items[p.slots[j]].blockptr, j);
+
+            p.bufs[h.level] = span((uint8_t*)f.tree_cache.find(items[p.slots[j]].blockptr)->second.data(),
+                                   sb.nodesize);
+
+            if (cow)
+                cow_tree(f, p, j); // FIXME - also COW parents
+
+            p.slots[j - 1] = 0;
         }
 
         return true;
@@ -1556,6 +1604,47 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
     }
 }
 
+static void finish_off(fs& f, uint64_t offset, uint64_t length) {
+    vector<pair<uint64_t, uint64_t>> identity_remaps;
+
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+        path p;
+
+        find_item2(f, addr, level, { offset, (btrfs::key_type)0, 0}, false,
+                   btrfs::REMAP_TREE_OBJECTID, p);
+
+        do {
+            auto& h = *(btrfs::header*)p.bufs[0].data();
+            auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+            if (p.slots[0] == h.nritems)
+                break;
+
+            auto& k = items[p.slots[0]].key;
+
+            if (k.objectid >= offset + length)
+                break;
+
+            if (k.type != btrfs::key_type::IDENTITY_REMAP) {
+                throw formatted_error("finish_off: expected IDENTITY_REMAP, found {}",
+                                      k);
+            }
+
+            identity_remaps.emplace_back(k.objectid, k.offset);
+
+            if (!next_item(f, p, false))
+                break;
+        } while (true);
+    }
+
+    // FIXME - remove identity remaps for range
+    // FIXME - add inverse to FST
+    // FIXME - add free space info to FST
+    // FIXME - clear REMAPPED flag in chunk
+    // FIXME - clear REMAPPED flag in BG
+}
+
 static void demap_bg(fs& f, uint64_t offset) {
     print("FIXME - demap_bg {:x}\n", offset); // FIXME
 
@@ -1568,11 +1657,7 @@ static void demap_bg(fs& f, uint64_t offset) {
 
     process_remaps(f, offset, c.c.length);
 
-    // FIXME - when finished:
-    // FIXME - remove identity_remaps for range
-    // FIXME - clear REMAPPED flag in chunk
-    // FIXME - clear REMAPPED flag in BG
-    // FIXME - add FST entries (info and extents)
+    finish_off(f, offset, c.c.length);
 }
 
 static void load_fst(fs& f) {
