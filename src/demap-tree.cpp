@@ -1607,6 +1607,8 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
 static void finish_off(fs& f, uint64_t offset, uint64_t length) {
     vector<pair<uint64_t, uint64_t>> identity_remaps;
 
+    // find identity remaps
+
     {
         auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
         path p;
@@ -1638,6 +1640,8 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
         } while (true);
     }
 
+    // add free space extents
+
     uint32_t num_extents = 0;
 
     {
@@ -1660,6 +1664,8 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
         }
     }
 
+    // add free space info
+
     auto sp = insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
                           { offset, btrfs::key_type::FREE_SPACE_INFO, length },
                           sizeof(btrfs::free_space_info));
@@ -1668,7 +1674,13 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
     fsi.extent_count = num_extents;
     fsi.flags = 0;
 
-    // FIXME - remove identity remaps for range
+    // remove identity remaps for range
+
+    for (auto [remap_start, remap_length] : identity_remaps) {
+        delete_item(f, btrfs::REMAP_TREE_OBJECTID,
+                    {remap_start, btrfs::key_type::IDENTITY_REMAP, remap_length});
+    }
+
     // FIXME - clear REMAPPED flag in chunk
     // FIXME - clear REMAPPED flag in BG
 
