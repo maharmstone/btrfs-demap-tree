@@ -1825,15 +1825,19 @@ static void demap(const filesystem::path& fn) {
 
     // check remap tree is now empty
 
+    auto [remap_tree_addr, remap_tree_level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+
     {
-        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
         path p;
 
-        if (level != 0)
-            throw formatted_error("remap tree level was {}, expected 0", level);
+        if (remap_tree_level != 0) {
+            throw formatted_error("remap tree level was {}, expected 0",
+                                  remap_tree_level);
+        }
 
-        find_item2(f, addr, level, {0, (btrfs::key_type)0, 0}, false,
-                   btrfs::REMAP_TREE_OBJECTID, p);
+        find_item2(f, remap_tree_addr, remap_tree_level,
+                   {0, (btrfs::key_type)0, 0}, false, btrfs::REMAP_TREE_OBJECTID,
+                   p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
 
@@ -1841,11 +1845,19 @@ static void demap(const filesystem::path& fn) {
             throw runtime_error("remap tree was not empty");
     }
 
-    // FIXME - remove remap tree
+    // remove remap tree
+
+    delete_item(f, btrfs::ROOT_TREE_OBJECTID,
+                {btrfs::REMAP_TREE_OBJECTID, btrfs::key_type::ROOT_ITEM, 0});
+    f.ref_changes.emplace(remap_tree_addr,
+                          ref_change{btrfs::REMAP_TREE_OBJECTID, -1});
+
     // FIXME - remove all REMAP chunks
     // FIXME - add data reloc tree
     // FIXME - shorten block group items
     // FIXME - clear incompat flag
+
+    flush_transaction(f);
 }
 
 int main(int argc, char** argv) {
