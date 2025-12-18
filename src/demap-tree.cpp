@@ -1539,15 +1539,16 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
             return;
 
         switch (it.key.type) {
-            case btrfs::key_type::REMAP: {
+            case btrfs::key_type::REMAP:
                 cursor = process_remap(f, it.key.objectid, it.key.offset);
                 break;
-            }
 
-            // FIXME - if IDENTITY_REMAP, skip to next
+            case btrfs::key_type::IDENTITY_REMAP:
+                cursor = it.key.objectid + it.key.offset;
+                break;
 
             default:
-                throw formatted_error("process_remaps: expected REMAP, found {}",
+                throw formatted_error("process_remaps: expected REMAP or IDENTITY_REMAP, found {}",
                                       it.key);
         }
     }
