@@ -1681,7 +1681,26 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
                     {remap_start, btrfs::key_type::IDENTITY_REMAP, remap_length});
     }
 
-    // FIXME - clear REMAPPED flag in chunk
+    // clear REMAPPED flag in chunk
+
+    {
+        btrfs::key key{btrfs::FIRST_CHUNK_TREE_OBJECTID,
+                       btrfs::key_type::CHUNK_ITEM, offset};
+        auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID,
+                                         key, true);
+
+        if (found_key != key) {
+            throw formatted_error("finish_off: searched for {}, found {}",
+                                  key, found_key);
+        }
+
+        assert(sp.size() >= offsetof(btrfs::chunk, stripe));
+
+        auto& c = *(btrfs::chunk*)sp.data();
+
+        c.type &= ~btrfs::BLOCK_GROUP_REMAPPED;
+    }
+
     // FIXME - clear REMAPPED flag in BG
 
     flush_transaction(f);
