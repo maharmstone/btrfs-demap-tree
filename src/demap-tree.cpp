@@ -16,6 +16,8 @@ using namespace std;
 
 #define MAX_STRIPES 16
 
+static const size_t SZ_1M = 0x100000;
+
 struct device {
     device(const filesystem::path& fn) : f(fn) { }
 
@@ -1494,7 +1496,7 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
 }
 
 static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length) {
-    static const uint64_t MAX_COPY = 0x1000; // FIXME (make option?)
+    static const uint64_t MAX_COPY = SZ_1M; // FIXME - make option?
 
     print("process_remap: {:x}, {:x}\n", src_addr, length);
 
