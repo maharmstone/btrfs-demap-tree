@@ -1608,7 +1608,7 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
     }
 }
 
-static void finish_off(fs& f, uint64_t offset, uint64_t length) {
+static void finish_off_bg(fs& f, uint64_t offset, uint64_t length) {
     vector<pair<uint64_t, uint64_t>> identity_remaps;
 
     // find identity remaps
@@ -1633,7 +1633,7 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
                 break;
 
             if (k.type != btrfs::key_type::IDENTITY_REMAP) {
-                throw formatted_error("finish_off: expected IDENTITY_REMAP, found {}",
+                throw formatted_error("finish_off_bg: expected IDENTITY_REMAP, found {}",
                                       k);
             }
 
@@ -1696,7 +1696,7 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
                                          key, true);
 
         if (found_key != key) {
-            throw formatted_error("finish_off: searched for {}, found {}",
+            throw formatted_error("finish_off_bg: searched for {}, found {}",
                                   key, found_key);
         }
 
@@ -1728,7 +1728,7 @@ static void demap_bg(fs& f, uint64_t offset) {
 
     process_remaps(f, offset, c.c.length);
 
-    finish_off(f, offset, c.c.length);
+    finish_off_bg(f, offset, c.c.length);
 }
 
 static void load_fst(fs& f) {
