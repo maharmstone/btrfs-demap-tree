@@ -1638,6 +1638,8 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
         } while (true);
     }
 
+    uint32_t num_extents = 0;
+
     {
         uint64_t last_end = offset;
 
@@ -1645,6 +1647,7 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
             if (remap_start > last_end) {
                 insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
                             { last_end, btrfs::key_type::FREE_SPACE_EXTENT, remap_start - last_end }, 0);
+                num_extents++;
             }
 
             last_end = remap_start + remap_length;
@@ -1653,10 +1656,17 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
         if (last_end < offset + length) {
             insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
                         { last_end, btrfs::key_type::FREE_SPACE_EXTENT, offset + length - last_end }, 0);
+            num_extents++;
         }
     }
 
-    // FIXME - add free space info to FST
+    auto sp = insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
+                          { offset, btrfs::key_type::FREE_SPACE_INFO, length },
+                          sizeof(btrfs::free_space_info));
+    auto& fsi = *(btrfs::free_space_info*)sp.data();
+
+    fsi.extent_count = num_extents;
+    fsi.flags = 0;
 
     // FIXME - remove identity remaps for range
     // FIXME - clear REMAPPED flag in chunk
