@@ -1823,8 +1823,25 @@ static void demap(const filesystem::path& fn) {
         }
     }
 
-    // FIXME - when finished:
-    // FIXME - remove (now empty) remap tree
+    // check remap tree is now empty
+
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+        path p;
+
+        if (level != 0)
+            throw formatted_error("remap tree level was {}, expected 0", level);
+
+        find_item2(f, addr, level, {0, (btrfs::key_type)0, 0}, false,
+                   btrfs::REMAP_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        if (h.nritems != 0)
+            throw runtime_error("remap tree was not empty");
+    }
+
+    // FIXME - remove remap tree
     // FIXME - remove all REMAP chunks
     // FIXME - add data reloc tree
     // FIXME - shorten block group items
