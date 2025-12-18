@@ -994,6 +994,10 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
     auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
 
     bgi.used += delta;
+
+    auto& sb = f.dev.sb;
+
+    sb.bytes_used += delta;
 }
 
 static void flush_transaction(fs& f) {
