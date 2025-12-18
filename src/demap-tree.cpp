@@ -1683,6 +1683,8 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
 
     // clear REMAPPED flag in chunk
 
+    uint64_t flags;
+
     {
         btrfs::key key{btrfs::FIRST_CHUNK_TREE_OBJECTID,
                        btrfs::key_type::CHUNK_ITEM, offset};
@@ -1699,9 +1701,13 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
         auto& c = *(btrfs::chunk*)sp.data();
 
         c.type &= ~btrfs::BLOCK_GROUP_REMAPPED;
+
+        flags = c.type;
     }
 
-    // FIXME - clear REMAPPED flag in BG
+    // clear REMAPPED flag in BG
+
+    update_block_group_flags(f, offset, length, flags);
 
     flush_transaction(f);
 }
