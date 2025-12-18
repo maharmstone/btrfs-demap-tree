@@ -1638,11 +1638,31 @@ static void finish_off(fs& f, uint64_t offset, uint64_t length) {
         } while (true);
     }
 
-    // FIXME - remove identity remaps for range
-    // FIXME - add inverse to FST
+    {
+        uint64_t last_end = offset;
+
+        for (auto [remap_start, remap_length] : identity_remaps) {
+            if (remap_start > last_end) {
+                insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
+                            { last_end, btrfs::key_type::FREE_SPACE_EXTENT, remap_start - last_end }, 0);
+            }
+
+            last_end = remap_start + remap_length;
+        }
+
+        if (last_end < offset + length) {
+            insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
+                        { last_end, btrfs::key_type::FREE_SPACE_EXTENT, offset + length - last_end }, 0);
+        }
+    }
+
     // FIXME - add free space info to FST
+
+    // FIXME - remove identity remaps for range
     // FIXME - clear REMAPPED flag in chunk
     // FIXME - clear REMAPPED flag in BG
+
+    flush_transaction(f);
 }
 
 static void demap_bg(fs& f, uint64_t offset) {
