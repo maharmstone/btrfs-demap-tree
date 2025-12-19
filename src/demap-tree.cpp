@@ -2083,6 +2083,30 @@ static void add_tree(fs& f, uint64_t num) {
     ri.generation_v2 = ri.generation;
 }
 
+static void add_data_reloc_tree(fs& f) {
+    auto& sb = f.dev.sb;
+
+    static const uint32_t S_IFDIR = 040000; // FIXME - stick this somewhere better
+
+    add_tree(f, btrfs::DATA_RELOC_TREE_OBJECTID);
+
+    auto sp = insert_item(f, btrfs::DATA_RELOC_TREE_OBJECTID,
+                          { btrfs::FIRST_FREE_OBJECTID, btrfs::key_type::INODE_ITEM, 0 },
+                          sizeof(btrfs::inode_item));
+    auto& ii = *(btrfs::inode_item*)sp.data();
+
+    memset(&ii, 0, sizeof(ii));
+
+    ii.generation = sb.generation + 1;
+    ii.nbytes = sb.nodesize;
+    ii.nlink = 1;
+    ii.mode = S_IFDIR | 0755;
+    // FIXME - set atime, ctime, mtime, and otime to now(?)
+
+    // 100,c,100
+    // inode_ref index=0 name_len=2 name=..
+}
+
 static void demap(const filesystem::path& fn) {
     fs f(fn);
 
@@ -2156,10 +2180,7 @@ static void demap(const filesystem::path& fn) {
             f.remove_chunks.emplace(c.first);
     }
 
-    // add data reloc tree
-
-    add_tree(f, btrfs::DATA_RELOC_TREE_OBJECTID);
-    // FIXME - populate data reloc tree (100,INODE_ITEM,0; 100,INODE_REF,100)
+    add_data_reloc_tree(f);
 
     shorten_block_group_items(f);
 
