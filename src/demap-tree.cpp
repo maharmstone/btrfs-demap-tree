@@ -1042,9 +1042,35 @@ static void remove_chunk(fs& f, uint64_t offset) {
         delete_item2(f, p);
     }
 
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::CHUNK_TREE_OBJECTID);
+        btrfs::key key{btrfs::FIRST_CHUNK_TREE_OBJECTID,
+                       btrfs::key_type::CHUNK_ITEM, offset};
+        path p;
+
+        find_item2(f, addr, level, key, true, btrfs::CHUNK_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        if (p.slots[0] == h.nritems)
+            throw formatted_error("remove_chunk: {} not found", key);
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (it.key != key) {
+            throw formatted_error("remove_chunk: found {}, expected {}",
+                                  it.key, key);
+        }
+
+        // FIXME - remove dev extents
+
+        // remove chunk item
+
+        delete_item2(f, p);
+    }
+
     // FIXME - remove FST entries
-    // FIXME - remove chunk item
-    // FIXME - remove dev extents
     // FIXME - update dev item in tree
     // FIXME - update dev item in sb
 }
