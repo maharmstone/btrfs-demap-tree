@@ -1348,7 +1348,7 @@ static void extend_item(fs& f, path& p, uint32_t size) {
 
     // adjust item offsets and move data
 
-    if (p.slots[0] != h.nritems - 1) {
+    {
         unsigned int to_move = 0;
 
         // move data around
