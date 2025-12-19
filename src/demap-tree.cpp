@@ -1004,6 +1004,8 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
 }
 
 static void remove_chunk(fs& f, uint64_t offset) {
+    auto& sb = f.dev.sb;
+
     {
         auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
         btrfs::key key{offset, btrfs::key_type::BLOCK_GROUP_ITEM,
@@ -1043,6 +1045,8 @@ static void remove_chunk(fs& f, uint64_t offset) {
         delete_item2(f, p);
     }
 
+    vector<uint64_t> extents;
+
     {
         auto [addr, level] = find_tree_addr(f, btrfs::CHUNK_TREE_OBJECTID);
         btrfs::key key{btrfs::FIRST_CHUNK_TREE_OBJECTID,
@@ -1064,11 +1068,30 @@ static void remove_chunk(fs& f, uint64_t offset) {
                                   it.key, key);
         }
 
-        // FIXME - remove dev extents
+        assert(it.size >= offsetof(btrfs::chunk, stripe));
+
+        auto& c = *(btrfs::chunk*)item_span(p).data();
+
+        assert(it.size == offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)));
+
+        for (uint16_t i = 0; i < c.num_stripes; i++) {
+            // FIXME - multi-device support
+            assert(c.stripe[i].devid == sb.dev_item.devid);
+            assert(c.stripe[i].dev_uuid == sb.dev_item.uuid);
+
+            extents.emplace_back(c.stripe[i].offset);
+        }
 
         // remove chunk item
 
         delete_item2(f, p);
+    }
+
+    // remove dev extents
+
+    for (auto e : extents) {
+        delete_item(f, btrfs::DEV_TREE_OBJECTID,
+                    {sb.dev_item.devid, btrfs::key_type::DEV_EXTENT, e});
     }
 
     // FIXME - remove FST entries
