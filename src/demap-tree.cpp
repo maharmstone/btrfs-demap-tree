@@ -990,12 +990,9 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
                               key, it.key);
     }
 
-    if (it.size != sizeof(btrfs::block_group_item_v2)) {
-        throw formatted_error("update_block_group_used: {} was {} bytes, expected {}",
-                              it.key, it.size, sizeof(btrfs::block_group_item_v2));
-    }
+    assert(it.size >= sizeof(btrfs::block_group_item));
 
-    auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
+    auto& bgi = *(btrfs::block_group_item*)item_span(p).data();
 
     bgi.used += delta;
 
@@ -1057,9 +1054,9 @@ static void remove_chunk(fs& f, uint64_t offset) {
 
         length = it.key.offset;
 
-        assert(it.size == sizeof(btrfs::block_group_item_v2));
+        assert(it.size >= sizeof(btrfs::block_group_item));
 
-        auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
+        auto& bgi = *(btrfs::block_group_item*)item_span(p).data();
 
         if (bgi.used != 0) {
             throw formatted_error("remove_chunk: block group {:x} is not empty (used == {:x})",
@@ -1366,6 +1363,47 @@ static void extend_item(fs& f, path& p, uint32_t size) {
         assert(off >= size + sizeof(btrfs::header));
 
         memmove(p.bufs[0].data() + off - delta, p.bufs[0].data() + off, to_move);
+    }
+
+    // change item size
+
+    it.size = size;
+}
+
+static void shorten_item(fs& f, path& p, uint32_t size) {
+    auto& sb = f.dev.sb;
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    if (it.size == size)
+        return;
+
+    if (size > it.size) {
+        throw formatted_error("shorten_item: size {} for key {} is less than current size {}",
+                              size, it.key, it.size);
+    }
+
+    uint32_t delta = it.size - size;
+
+    // adjust item offsets and move data
+
+    {
+        unsigned int to_move = 0;
+
+        // move data around
+
+        uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
+
+        for (unsigned int i = p.slots[0]; i < h.nritems; i++) {
+            to_move += items[i].size;
+            items[i].offset += delta;
+        }
+
+        assert(off + to_move <= sb.nodesize);
+
+        memmove(p.bufs[0].data() + off + delta, p.bufs[0].data() + off,
+                to_move - delta);
     }
 
     // change item size
@@ -1956,6 +1994,38 @@ static void load_fst(fs& f) {
     }
 }
 
+static void shorten_block_group_items(fs& f) {
+    auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
+    path p;
+
+    find_item2(f, addr, level, { 0, (btrfs::key_type)0, 0}, true,
+               btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+
+    do {
+        auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+        if (p.slots[0] == h.nritems)
+            break;
+
+        auto& it = items[p.slots[0]];
+
+        print("k = {}\n", it.key);
+
+        if (it.key.type != btrfs::key_type::BLOCK_GROUP_ITEM) {
+            throw formatted_error("shorten_block_group_items: found {}, expected BLOCK_GROUP_ITEM",
+                                  it.key);
+        }
+
+        assert(it.size == sizeof(btrfs::block_group_item_v2));
+
+        shorten_item(f, p, sizeof(btrfs::block_group_item));
+
+        if (!next_item(f, p, false))
+            break;
+    } while (true);
+}
+
 static void demap(const filesystem::path& fn) {
     fs f(fn);
 
@@ -2030,7 +2100,8 @@ static void demap(const filesystem::path& fn) {
     }
 
     // FIXME - add data reloc tree
-    // FIXME - shorten block group items
+
+    shorten_block_group_items(f);
 
     f.dev.sb.incompat_flags &= ~btrfs::FEATURE_INCOMPAT_REMAP_TREE;
 
