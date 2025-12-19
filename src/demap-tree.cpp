@@ -1946,7 +1946,8 @@ static void demap(const filesystem::path& fn) {
 
     // FIXME - add data reloc tree
     // FIXME - shorten block group items
-    // FIXME - clear incompat flag
+
+    f.dev.sb.incompat_flags &= ~btrfs::FEATURE_INCOMPAT_REMAP_TREE;
 
     flush_transaction(f);
 }
