@@ -264,6 +264,8 @@ constexpr uint64_t TREE_LOG_OBJECTID = 0xfffffffffffffffa;
 constexpr uint64_t ORPHAN_OBJECTID = 0xfffffffffffffffb;
 constexpr uint64_t BALANCE_OBJECTID = 0xfffffffffffffffc;
 
+constexpr uint64_t FIRST_FREE_OBJECTID = 0x100;
+
 constexpr uint64_t DEVICE_RANGE_RESERVED = 0x100000;
 
 constexpr uint64_t INODE_NODATASUM = 1 << 0;

@@ -2024,6 +2024,65 @@ static void shorten_block_group_items(fs& f) {
     } while (true);
 }
 
+static btrfs::uuid get_chunk_tree_uuid(fs& f) {
+    auto [addr, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
+    path p;
+
+    find_item2(f, addr, level, {0, (btrfs::key_type)0, 0}, false,
+               btrfs::ROOT_TREE_OBJECTID, p);
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+    return h.chunk_tree_uuid;
+}
+
+static void add_tree(fs& f, uint64_t num) {
+    auto& sb = f.dev.sb;
+
+    // add empty tree node
+
+    auto addr = allocate_metadata(f, num);
+
+    auto [it, _] = f.tree_cache.emplace(addr, "");
+
+    auto& new_tree = it->second;
+
+    new_tree.resize(sb.nodesize); // zero-initializes
+
+    auto& h = *(btrfs::header*)new_tree.data();
+
+    h.fsid = sb.fsid;
+    h.bytenr = addr;
+    h.flags = btrfs::HEADER_FLAG_MIXED_BACKREF;
+    h.chunk_tree_uuid = get_chunk_tree_uuid(f);
+    h.generation = sb.generation + 1;
+    h.owner = num;
+    h.nritems = 0;
+    h.level = 0;
+
+    f.ref_changes.emplace(addr, ref_change{h.owner, 1});
+
+    // add new root item
+
+    btrfs::key key{h.owner, btrfs::key_type::ROOT_ITEM, 0};
+
+    auto sp = insert_item(f, btrfs::ROOT_TREE_OBJECTID, key,
+                          sizeof(btrfs::root_item));
+
+    auto& ri = *(btrfs::root_item*)sp.data();
+
+    memset(&ri, 0, sizeof(ri));
+
+    ri.inode.flags = btrfs::INODE_ROOT_ITEM_INIT;
+    ri.generation = sb.generation + 1;
+
+    ri.root_dirid = btrfs::FIRST_FREE_OBJECTID;
+    ri.bytenr = h.bytenr;
+    ri.bytes_used = sb.nodesize;
+    ri.refs = 1;
+    ri.generation_v2 = ri.generation;
+}
+
 static void demap(const filesystem::path& fn) {
     fs f(fn);
 
@@ -2097,7 +2156,10 @@ static void demap(const filesystem::path& fn) {
             f.remove_chunks.emplace(c.first);
     }
 
-    // FIXME - add data reloc tree
+    // add data reloc tree
+
+    add_tree(f, btrfs::DATA_RELOC_TREE_OBJECTID);
+    // FIXME - populate data reloc tree (100,INODE_ITEM,0; 100,INODE_REF,100)
 
     shorten_block_group_items(f);
 
