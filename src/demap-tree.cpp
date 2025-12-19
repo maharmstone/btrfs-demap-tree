@@ -1003,8 +1003,33 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
     sb.bytes_used += delta;
 }
 
+static void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
+    auto& sb = f.dev.sb;
+
+    auto key = btrfs::key{btrfs::DEV_ITEMS_OBJECTID, btrfs::key_type::DEV_ITEM, devid};
+    auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
+
+    if (found_key != key) {
+        throw formatted_error("update_dev_item_bytes_used: found {}, expected {}",
+                              found_key, key);
+    }
+
+    if (sp.size() != sizeof(btrfs::dev_item)) {
+        throw formatted_error("update_dev_item_bytes_used: {} was {} bytes, expected {}",
+                              key, sp.size(), sizeof(btrfs::dev_item));
+    }
+
+    auto& di = *(btrfs::dev_item*)sp.data();
+
+    di.bytes_used += delta;
+
+    if (sb.dev_item.devid == devid)
+        sb.dev_item.bytes_used += delta;
+}
+
 static void remove_chunk(fs& f, uint64_t offset) {
     auto& sb = f.dev.sb;
+    uint64_t length;
 
     {
         auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
@@ -1029,7 +1054,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
                                   it.key, offset);
         }
 
-        // FIXME - check BG is definitely empty
+        length = it.key.offset;
 
         assert(it.size == sizeof(btrfs::block_group_item_v2));
 
@@ -1092,13 +1117,12 @@ static void remove_chunk(fs& f, uint64_t offset) {
     for (auto e : extents) {
         delete_item(f, btrfs::DEV_TREE_OBJECTID,
                     {sb.dev_item.devid, btrfs::key_type::DEV_EXTENT, e});
+
+        update_dev_item_bytes_used(f, sb.dev_item.devid, -length);
     }
 
     // FIXME - remove FST entries
-    // FIXME - update dev item in tree
-    // FIXME - update dev item in sb
 }
-
 
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
@@ -1303,30 +1327,6 @@ static void insert_dev_extent(fs& f, uint64_t devid, uint64_t phys,
 
     // mkfs sets this properly, Linux sets it to 0
     memset(&de.chunk_tree_uuid, 0, sizeof(de.chunk_tree_uuid));
-}
-
-static void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
-    auto& sb = f.dev.sb;
-
-    auto key = btrfs::key{btrfs::DEV_ITEMS_OBJECTID, btrfs::key_type::DEV_ITEM, devid};
-    auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
-
-    if (found_key != key) {
-        throw formatted_error("update_dev_item_bytes_used: found {}, expected {}",
-                              found_key, key);
-    }
-
-    if (sp.size() != sizeof(btrfs::dev_item)) {
-        throw formatted_error("update_dev_item_bytes_used: {} was {} bytes, expected {}",
-                              key, sp.size(), sizeof(btrfs::dev_item));
-    }
-
-    auto& di = *(btrfs::dev_item*)sp.data();
-
-    di.bytes_used += delta;
-
-    if (sb.dev_item.devid == devid)
-        sb.dev_item.bytes_used += delta;
 }
 
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
