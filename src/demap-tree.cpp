@@ -683,6 +683,7 @@ static void delete_item2(fs& f, path& p) {
     // FIXME - if nritems is now 0 and not top, remove entry in parent
     // FIXME - adjust levels if internal tree has only one entry
     // FIXME - merging trees
+    // FIXME - make sure path still valid if we have to rearrange things
 }
 
 static void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
@@ -1121,7 +1122,67 @@ static void remove_chunk(fs& f, uint64_t offset) {
         update_dev_item_bytes_used(f, sb.dev_item.devid, -length);
     }
 
-    // FIXME - remove FST entries
+    // remove FST entries
+
+    uint32_t fst_entries;
+
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
+        btrfs::key key{offset, btrfs::key_type::FREE_SPACE_INFO, length};
+        path p;
+
+        find_item2(f, addr, level, key, true,
+                   btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (it.key != key) {
+            throw formatted_error("remove_chunk: found {}, expected {}",
+                                  it.key, key);
+        }
+
+        assert(it.size == sizeof(btrfs::free_space_info));
+
+        auto& fsi = *(btrfs::free_space_info*)item_span(p).data();
+
+        fst_entries = fsi.extent_count;
+
+        delete_item2(f, p);
+    }
+
+    // FIXME - FST bitmaps
+
+    for (uint32_t i = 0; i < fst_entries; i++) {
+        auto [addr, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
+        btrfs::key key{offset, btrfs::key_type::FREE_SPACE_EXTENT, 0};
+        path p;
+
+        find_item2(f, addr, level, key, true,
+                   btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (it.key.type != btrfs::key_type::FREE_SPACE_EXTENT) {
+            throw formatted_error("remove_chunk: found {}, expected FREE_SPACE_EXTENT",
+                                  it.key);
+        }
+
+        if (it.key.objectid < offset || it.key.objectid >= offset + length) {
+            throw formatted_error("remove_chunk: {} not in range {:x},{:x}",
+                                  it.key, offset, length);
+        }
+
+        // assert that we're not crossing chunk boundary
+        assert(it.key.objectid + it.key.offset <= offset + length);
+
+        delete_item2(f, p);
+    }
 }
 
 static void flush_transaction(fs& f) {
