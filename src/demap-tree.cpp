@@ -326,6 +326,7 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
 
             ri.bytenr = h.bytenr;
             ri.generation = sb.generation + 1;
+            ri.generation_v2 = ri.generation;
 
             if (h.owner == btrfs::REMAP_TREE_OBJECTID) {
                 sb.remap_root = h.bytenr;
