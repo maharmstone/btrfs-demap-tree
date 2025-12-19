@@ -2010,8 +2010,6 @@ static void shorten_block_group_items(fs& f) {
 
         auto& it = items[p.slots[0]];
 
-        print("k = {}\n", it.key);
-
         if (it.key.type != btrfs::key_type::BLOCK_GROUP_ITEM) {
             throw formatted_error("shorten_block_group_items: found {}, expected BLOCK_GROUP_ITEM",
                                   it.key);
