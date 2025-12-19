@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <functional>
 #include <print>
 #include <getopt.h>
@@ -51,6 +52,7 @@ struct fs {
     map<uint64_t, chunk_info> chunks;
     map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
     map<uint64_t, ref_change> ref_changes;
+    set<uint64_t> remove_chunks;
 };
 
 static pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree);
@@ -1000,6 +1002,54 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
     sb.bytes_used += delta;
 }
 
+static void remove_chunk(fs& f, uint64_t offset) {
+    {
+        auto [addr, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
+        btrfs::key key{offset, btrfs::key_type::BLOCK_GROUP_ITEM,
+                       0xffffffffffffffff};
+
+        path p;
+
+        find_item2(f, addr, level, key, false,
+                   btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+
+        if (!prev_item(f, p, true))
+            throw runtime_error("remove_chunk: prev_item failed");
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (it.key.objectid != offset || it.key.type != btrfs::key_type::BLOCK_GROUP_ITEM) {
+            throw formatted_error("remove_chunk: found {} when searching for block group {:x}",
+                                  it.key, offset);
+        }
+
+        // FIXME - check BG is definitely empty
+
+        assert(it.size == sizeof(btrfs::block_group_item_v2));
+
+        auto& bgi = *(btrfs::block_group_item_v2*)item_span(p).data();
+
+        if (bgi.used != 0) {
+            throw formatted_error("remove_chunk: block group {:x} is not empty (used == {:x})",
+                                  offset, bgi.used);
+        }
+
+        // remove block group item
+
+        delete_item2(f, p);
+    }
+
+    // FIXME - remove FST entries
+    // FIXME - remove chunk item
+    // FIXME - remove dev extents
+    // FIXME - update dev item in tree
+    // FIXME - update dev item in sb
+}
+
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
@@ -1061,6 +1111,11 @@ static void flush_transaction(fs& f) {
                     update_block_group_used(f, h.bytenr, (int64_t)sb.nodesize);
                 }
             }
+
+            for (auto offset : f.remove_chunks) {
+                remove_chunk(f, offset);
+            }
+            f.remove_chunks.clear();
 
             if (f.ref_changes.empty())
                 break;
@@ -1856,7 +1911,13 @@ static void demap(const filesystem::path& fn) {
     f.ref_changes.emplace(remap_tree_addr,
                           ref_change{btrfs::REMAP_TREE_OBJECTID, -1});
 
-    // FIXME - remove all REMAP chunks
+    // remove all REMAP chunks
+
+    for (const auto& c : f.chunks) {
+        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAP)
+            f.remove_chunks.emplace(c.first);
+    }
+
     // FIXME - add data reloc tree
     // FIXME - shorten block group items
     // FIXME - clear incompat flag
