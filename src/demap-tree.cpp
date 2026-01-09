@@ -1773,8 +1773,10 @@ static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length,
 
     // FIXME - avoiding superblock
 
-    // FIXME - read data
-    // FIXME - write data
+    auto buf = read_data(f, dst_addr, length);
+
+    // FIXME - don't mix and match char and uint8_t
+    write_data(f, src_addr, span((uint8_t*)buf.data(), buf.size()));
 
     remove_from_remap_tree(f, src_addr, length);
     add_identity_remap(f, src_addr, length);
