@@ -1751,10 +1751,11 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
     update_block_group_identity_remap_count(f, src_addr, 1);
 }
 
-static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length) {
+static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length,
+                              uint64_t dst_addr) {
     static const uint64_t MAX_COPY = SZ_1M; // FIXME - make option?
 
-    print("process_remap: {:x}, {:x}\n", src_addr, length);
+    print("process_remap: {:x}, {:x}, {:x}\n", src_addr, length, dst_addr);
 
     // FIXME - if metadata, don't split nodes
     // FIXME - compressed extents need to be contiguous(?)
@@ -1797,9 +1798,15 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
             return;
 
         switch (it.key.type) {
-            case btrfs::key_type::REMAP:
-                cursor = process_remap(f, it.key.objectid, it.key.offset);
+            case btrfs::key_type::REMAP: {
+                assert(it.size == sizeof(btrfs::remap));
+
+                auto& r = *(btrfs::remap*)((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset);
+
+                cursor = process_remap(f, it.key.objectid, it.key.offset,
+                                       r.address);
                 break;
+            }
 
             case btrfs::key_type::IDENTITY_REMAP:
                 cursor = it.key.objectid + it.key.offset;
