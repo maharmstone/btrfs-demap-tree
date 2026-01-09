@@ -1495,9 +1495,15 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     insert_dev_extent(f, sb.dev_item.devid, phys, offset, size);
     update_dev_item_bytes_used(f, sb.dev_item.devid, size);
 
-    flush_transaction(f);
+    {
+        // update in-memory chunk item
 
-    // FIXME - update in-memory chunk item
+        auto& c2 = f.chunks.at(offset);
+
+        memcpy(&c2.c, &c, offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)));
+    }
+
+    flush_transaction(f);
 }
 
 static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
