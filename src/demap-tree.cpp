@@ -2168,10 +2168,8 @@ static void demap(const filesystem::path& fn) {
     load_fst(f);
 
     for (const auto& c : f.chunks) {
-        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
+        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAPPED)
             demap_bg(f, c.first);
-            break; // FIXME
-        }
     }
 
     // check remap tree is now empty
