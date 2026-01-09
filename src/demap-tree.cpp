@@ -529,6 +529,8 @@ static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
         case btrfs::raid_type::RAID1:
         case btrfs::raid_type::RAID1C3:
         case btrfs::raid_type::RAID1C4: {
+            assert(c.c.num_stripes > 0);
+
             auto stripes = span(c.c.stripe, c.c.num_stripes);
 
             for (auto& s : stripes) {
