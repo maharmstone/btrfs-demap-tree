@@ -693,3 +693,60 @@ export void add_tree(fs& f, uint64_t num) {
     ri.refs = 1;
     ri.generation_v2 = ri.generation;
 }
+
+export void delete_item2(fs& f, path& p) {
+    auto& sb = f.dev.sb;
+    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    // move data
+
+    if (items[p.slots[0]].size != 0) {
+        unsigned int data_size = 0, after_item = 0;
+
+        for (unsigned int i = 0; i < h.nritems; i++) {
+            data_size += items[i].size;
+
+            if (i > p.slots[0])
+                after_item += items[i].size;
+        }
+
+        memmove(p.bufs[0].data() + sb.nodesize - data_size + items[p.slots[0]].size,
+                p.bufs[0].data() + sb.nodesize - data_size,
+                after_item);
+
+        for (unsigned int i = p.slots[0] + 1; i < h.nritems; i++) {
+            items[i].offset += (uint32_t)items[p.slots[0]].size; // FIXME - make it so cast not needed
+        }
+    }
+
+    // adjust items
+
+    memmove(&items[p.slots[0]], &items[p.slots[0] + 1],
+            sizeof(btrfs::item) * (h.nritems - p.slots[0] - 1));
+    h.nritems--;
+
+    // FIXME - update parents if deleting first item
+
+    // FIXME - if nritems is now 0 and not top, remove entry in parent
+    // FIXME - adjust levels if internal tree has only one entry
+    // FIXME - merging trees
+    // FIXME - make sure path still valid if we have to rearrange things
+}
+
+export void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
+    auto [addr, level] = find_tree_addr(f, tree);
+    path p;
+
+    find_item2(f, addr, level, key, true, tree, p);
+
+    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    if (p.slots[0] >= h.nritems || key != items[p.slots[0]].key) {
+        throw formatted_error("delete_item: key {} in tree {:x} does not exist",
+                              key, tree);
+    }
+
+    delete_item2(f, p);
+}
