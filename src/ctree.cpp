@@ -750,3 +750,100 @@ export void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
 
     delete_item2(f, p);
 }
+
+export void extend_item(fs& f, path& p, uint32_t size) {
+    auto& sb = f.dev.sb;
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    if (size > sb.nodesize - sizeof(btrfs::header) - sizeof(btrfs::item)) {
+        throw formatted_error("extend_item: key {} would be {} bytes, too big for any tree",
+                              it.key, size);
+    }
+
+    if (it.size == size)
+        return;
+
+    if (size < it.size) {
+        throw formatted_error("extend_item: size {} for key {} is less than current size {}",
+                              size, it.key, it.size);
+    }
+
+    uint32_t delta = size - it.size;
+
+    uint32_t used = sizeof(btrfs::header) + (sizeof(btrfs::item) * h.nritems);
+
+    for (unsigned int i = 0; i < h.nritems; i++) {
+        used += items[i].size;
+    }
+
+    // FIXME - if now too large for node, move items left or right (share this logic with insert_item)
+
+    if (used + delta > sb.nodesize)
+        throw runtime_error("extend_item: FIXME - move items left or right");
+
+    // adjust item offsets and move data
+
+    {
+        unsigned int to_move = 0;
+
+        // move data around
+
+        uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
+
+        for (unsigned int i = p.slots[0]; i < h.nritems; i++) {
+            to_move += items[i].size;
+            items[i].offset -= delta;
+        }
+
+        assert(off >= size + sizeof(btrfs::header));
+
+        memmove(p.bufs[0].data() + off - delta, p.bufs[0].data() + off, to_move);
+    }
+
+    // change item size
+
+    it.size = size;
+}
+
+export void shorten_item(fs& f, path& p, uint32_t size) {
+    auto& sb = f.dev.sb;
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    if (it.size == size)
+        return;
+
+    if (size > it.size) {
+        throw formatted_error("shorten_item: size {} for key {} is less than current size {}",
+                              size, it.key, it.size);
+    }
+
+    uint32_t delta = it.size - size;
+
+    // adjust item offsets and move data
+
+    {
+        unsigned int to_move = 0;
+
+        // move data around
+
+        uint32_t off = sizeof(btrfs::header) + items[h.nritems - 1].offset;
+
+        for (unsigned int i = p.slots[0]; i < h.nritems; i++) {
+            to_move += items[i].size;
+            items[i].offset += delta;
+        }
+
+        assert(off + to_move <= sb.nodesize);
+
+        memmove(p.bufs[0].data() + off + delta, p.bufs[0].data() + off,
+                to_move - delta);
+    }
+
+    // change item size
+
+    it.size = size;
+}
