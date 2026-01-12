@@ -58,7 +58,8 @@ struct fs {
 static pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree);
 static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
-static uint64_t translate_remap(fs& f, uint64_t addr);
+static uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap);
+static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length);
 
 static void read_superblock(device& d) {
     d.f.seekg(btrfs::superblock_addrs[0]);
@@ -168,8 +169,12 @@ static void read_metadata(fs& f, uint64_t addr, uint8_t level) {
     if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
         auto& [chunk_start, c] = find_chunk(f, addr);
 
-        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
-            read_addr = translate_remap(f, addr);
+        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
+            uint64_t left_in_remap;
+
+            read_addr = translate_remap(f, addr, left_in_remap);
+            assert(left_in_remap >= f.dev.sb.nodesize);
+        }
     }
 
     auto tree = read_data(f, read_addr, sb.nodesize);
@@ -809,7 +814,7 @@ static bool next_item(fs& f, path& p, bool cow) {
     return false;
 }
 
-static uint64_t translate_remap(fs& f, uint64_t addr) {
+static uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap) {
     bool moved_back = false;
     btrfs::key key{addr, btrfs::key_type::IDENTITY_REMAP, 0};
 
@@ -843,6 +848,8 @@ static uint64_t translate_remap(fs& f, uint64_t addr) {
 
     if (it.key.objectid > addr || it.key.objectid + it.key.offset <= addr)
         throw formatted_error("translate_remap: no remap entry found for {:x}", addr);
+
+    left_in_remap = it.key.objectid + it.key.offset - addr;
 
     switch (it.key.type) {
         case btrfs::key_type::IDENTITY_REMAP:
@@ -1032,9 +1039,22 @@ static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
 }
 
 static void add_to_free_space_remapped(fs& f, uint64_t start, uint64_t len) {
-    // FIXME - loop through overlapping remap entries
-    // FIXME - carve out from remap tree
-    // FIXME - if not IDENTITY_REMAP, add to free space
+    while (true) {
+        uint64_t left_in_remap;
+
+        auto dest_addr = translate_remap(f, start, left_in_remap);
+
+        remove_from_remap_tree(f, start, min(len, left_in_remap));
+
+        // if (dest_addr != start)
+            // add_to_free_space2(f, dest_addr, min(len, left_in_remap));
+
+        if (left_in_remap >= len)
+            break;
+
+        start += left_in_remap;
+        len += left_in_remap;
+    }
 }
 
 static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
@@ -1674,6 +1694,8 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
 
     btrfs::key found_key;
     uint64_t dest_addr;
+
+    // FIXME - identity remaps
 
     // do remap
 
