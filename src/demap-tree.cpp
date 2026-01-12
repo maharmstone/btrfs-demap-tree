@@ -58,6 +58,7 @@ struct fs {
 static pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree);
 static pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
+static uint64_t translate_remap(fs& f, uint64_t addr);
 
 static void read_superblock(device& d) {
     d.f.seekg(btrfs::superblock_addrs[0]);
@@ -122,7 +123,7 @@ static const pair<uint64_t, const chunk_info&> find_chunk(fs& f, uint64_t addres
 static string read_data(fs& f, uint64_t addr, uint64_t size) {
     auto& [chunk_start, c] = find_chunk(f, addr);
 
-    // FIXME - remaps
+    assert(!(c.c.type & btrfs::BLOCK_GROUP_REMAPPED));
 
     string ret;
 
@@ -162,7 +163,16 @@ static void read_metadata(fs& f, uint64_t addr, uint8_t level) {
     if (f.tree_cache.contains(addr))
         return;
 
-    auto tree = read_data(f, addr, sb.nodesize);
+    uint64_t read_addr = addr;
+
+    if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
+        auto& [chunk_start, c] = find_chunk(f, addr);
+
+        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
+            read_addr = translate_remap(f, addr);
+    }
+
+    auto tree = read_data(f, read_addr, sb.nodesize);
 
     const auto& h = *(btrfs::header*)tree.data();
 
@@ -797,6 +807,59 @@ static bool next_item(fs& f, path& p, bool cow) {
     p = orig_p;
 
     return false;
+}
+
+static uint64_t translate_remap(fs& f, uint64_t addr) {
+    bool moved_back = false;
+    btrfs::key key{addr, btrfs::key_type::IDENTITY_REMAP, 0};
+
+    auto [remap_addr, remap_level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+    path p;
+
+    find_item2(f, remap_addr, remap_level, key, false,
+               btrfs::REMAP_TREE_OBJECTID, p);
+
+    {
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+
+        if (h.nritems == 0)
+            throw runtime_error("translate_remap: remap tree is empty");
+
+        if (p.slots[0] == h.nritems) {
+            p.slots[0]--;
+            moved_back = true;
+        }
+
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        if (!moved_back && it.key.objectid > addr)
+            prev_item(f, p, false);
+    }
+
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    if (it.key.objectid > addr || it.key.objectid + it.key.offset <= addr)
+        throw formatted_error("translate_remap: no remap entry found for {:x}", addr);
+
+    switch (it.key.type) {
+        case btrfs::key_type::IDENTITY_REMAP:
+            return addr;
+
+        case btrfs::key_type::REMAP: {
+            assert(it.size == sizeof(btrfs::remap));
+
+            auto& r = *(btrfs::remap*)item_span(p).data();
+
+            return addr - it.key.objectid + r.address;
+        }
+
+        default:
+            throw formatted_error("translate_remap: found {}, expected REMAP or IDENTITY_REMAP",
+                                  it.key);
+    }
 }
 
 static void change_key(path& p, const btrfs::key& key) {
