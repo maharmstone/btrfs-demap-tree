@@ -124,7 +124,7 @@ static const pair<uint64_t, const chunk_info&> find_chunk(fs& f, uint64_t addres
 static string read_data(fs& f, uint64_t addr, uint64_t size) {
     auto& [chunk_start, c] = find_chunk(f, addr);
 
-    assert(!(c.c.type & btrfs::BLOCK_GROUP_REMAPPED));
+    assert(c.c.num_stripes > 0);
 
     string ret;
 
