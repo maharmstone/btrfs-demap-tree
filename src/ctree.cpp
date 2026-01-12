@@ -847,3 +847,13 @@ export void shorten_item(fs& f, path& p, uint32_t size) {
 
     it.size = size;
 }
+
+export void change_key(path& p, const btrfs::key& key) {
+    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[p.slots[0]];
+
+    it.key = key;
+
+    // FIXME - if first item, change key of parents (recursively)
+}

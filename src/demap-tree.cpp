@@ -196,16 +196,6 @@ static void write_superblocks(fs& f) {
     }
 }
 
-static void change_key(path& p, const btrfs::key& key) {
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
-    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[p.slots[0]];
-
-    it.key = key;
-
-    // FIXME - if first item, change key of parents (recursively)
-}
-
 static void change_fst_extent_count(fs& f, uint64_t start, int32_t change) {
     auto [off, c] = find_chunk(f, start);
 
