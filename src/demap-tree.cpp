@@ -997,6 +997,7 @@ static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
     const auto& h = *(btrfs::header*)p.bufs[0].data();
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
+    bool identity_remap = it.key.type == btrfs::key_type::IDENTITY_REMAP;
 
     if (it.key.objectid == addr) {
         if (it.key.offset == length) {
@@ -1005,9 +1006,13 @@ static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
         } else {
             // removing beginning
 
-            auto& r = *(btrfs::remap*)item_span(p).data();
+            if (!identity_remap) {
+                assert(it.size == sizeof(btrfs::remap));
 
-            r.address += length;
+                auto& r = *(btrfs::remap*)item_span(p).data();
+
+                r.address += length;
+            }
 
             change_key(p, {addr + length, it.key.type, it.key.offset - length});
         }
@@ -1029,11 +1034,13 @@ static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
         btrfs::key new_key{ addr + length, it.key.type,
                             orig_key.objectid + orig_key.offset - addr - length };
         auto sp = insert_item(f, btrfs::REMAP_TREE_OBJECTID, new_key,
-                              sizeof(btrfs::remap));
+                              identity_remap ? 0 : sizeof(btrfs::remap));
 
-        auto& r2 = *(btrfs::remap*)sp.data();
+        if (!identity_remap) {
+            auto& r2 = *(btrfs::remap*)sp.data();
 
-        r2.address = other_addr + addr + length - it.key.objectid;
+            r2.address = other_addr + addr + length - it.key.objectid;
+        }
     }
 }
 
@@ -1111,8 +1118,7 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
             auto& r = *(btrfs::remap*)item_span(p).data();
 
             dest_addr = r.address;
-        } else
-            dest_addr = src_addr;
+        }
 
         remove_from_remap_tree2(f, p, src_addr, length);
     }
