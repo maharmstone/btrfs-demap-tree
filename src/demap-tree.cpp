@@ -965,7 +965,7 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
                           start, len);
 }
 
-static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
+static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
     // FIXME - throw exception if part of range already free
     // FIXME - bitmaps
 
@@ -1029,6 +1029,25 @@ static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
     insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
                 { start, btrfs::key_type::FREE_SPACE_EXTENT, len}, 0);
     change_fst_extent_count(f, start, 1);
+}
+
+static void add_to_free_space_remapped(fs& f, uint64_t start, uint64_t len) {
+    // FIXME - loop through overlapping remap entries
+    // FIXME - carve out from remap tree
+    // FIXME - if not IDENTITY_REMAP, add to free space
+}
+
+static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
+    if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
+        auto& [chunk_start, c] = find_chunk(f, start);
+
+        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
+            add_to_free_space_remapped(f, start, len);
+            return;
+        }
+    }
+
+    add_to_free_space2(f, start, len);
 }
 
 static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
