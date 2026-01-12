@@ -430,9 +430,6 @@ static void add_to_free_space_remapped(fs& f, uint64_t start, uint64_t len) {
 
         remove_from_remap_tree(f, start, min(len, left_in_remap));
 
-        // if (dest_addr != start)
-            // add_to_free_space2(f, dest_addr, min(len, left_in_remap));
-
         if (left_in_remap >= len)
             break;
 
