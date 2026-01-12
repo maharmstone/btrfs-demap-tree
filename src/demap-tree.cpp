@@ -1694,6 +1694,7 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
 
     btrfs::key found_key;
     uint64_t dest_addr;
+    bool identity_remap;
 
     // FIXME - identity remaps
 
@@ -1713,19 +1714,27 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
 
-        assert(it.key.type == btrfs::key_type::REMAP);
+        assert((it.key.type == btrfs::key_type::REMAP && it.size == sizeof(btrfs::remap)) ||
+               (it.key.type == btrfs::key_type::IDENTITY_REMAP && it.size == 0));
         assert(it.key.objectid <= src_addr);
         assert(it.key.objectid + it.key.offset >= src_addr + length);
-        assert(it.size == sizeof(btrfs::remap));
+
+        identity_remap = it.key.type == btrfs::key_type::IDENTITY_REMAP;
 
         found_key = it.key;
 
-        auto& r = *(btrfs::remap*)item_span(p).data();
+        if (!identity_remap) {
+            auto& r = *(btrfs::remap*)item_span(p).data();
 
-        dest_addr = r.address;
+            dest_addr = r.address;
+        } else
+            dest_addr = src_addr;
 
         remove_from_remap_tree2(f, p, src_addr, length);
     }
+
+    if (identity_remap)
+        return;
 
     // do remap backref
 
