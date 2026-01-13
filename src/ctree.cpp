@@ -367,11 +367,12 @@ export bool prev_item(fs& f, path& p, bool cow) {
             auto& sb = f.dev.sb;
             const auto& h = *(btrfs::header*)p.bufs[j].data();
             auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
+            auto& it = items[p.slots[j]];
 
-            read_metadata(f, items[p.slots[j]].blockptr, j);
+            read_metadata(f, it.blockptr, h.level - 1);
 
-            p.bufs[h.level] = span((uint8_t*)f.tree_cache.find(items[p.slots[j]].blockptr)->second.data(),
-                                   sb.nodesize);
+            p.bufs[h.level - 1] = span((uint8_t*)f.tree_cache.find(it.blockptr)->second.data(),
+                                       sb.nodesize);
 
             if (cow)
                 cow_tree(f, p, j); // FIXME - also COW parents
