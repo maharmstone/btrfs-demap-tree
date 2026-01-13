@@ -666,7 +666,21 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     items[p.slots[0]].size = size;
 
-    // FIXME - if first item, update internal nodes (recursively)
+    if (p.slots[0] == 0) {
+        for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
+            if (p.bufs[i].empty())
+                break;
+
+            const auto& h = *(btrfs::header*)p.bufs[i].data();
+            auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+            auto& it = items[p.slots[i]];
+
+            it.key = key;
+
+            if (p.slots[i] != 0)
+                break;
+        }
+    }
 
     return item_span(p);
 }
