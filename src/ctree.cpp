@@ -879,11 +879,28 @@ export void shorten_item(fs& f, path& p, uint32_t size) {
 }
 
 export void change_key(path& p, const btrfs::key& key) {
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
-    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[p.slots[0]];
+    for (uint8_t i = 0; i < btrfs::MAX_LEVEL; i++) {
+        if (p.bufs[i].empty())
+            break;
 
-    it.key = key;
+        const auto& h = *(btrfs::header*)p.bufs[i].data();
 
-    // FIXME - if first item, change key of parents (recursively)
+        // assert that tree has been COWed
+        assert(!(h.flags & btrfs::HEADER_FLAG_WRITTEN));
+
+        if (i == 0) {
+            auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+            auto& it = items[p.slots[i]];
+
+            it.key = key;
+        } else {
+            auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+            auto& it = items[p.slots[i]];
+
+            it.key = key;
+        }
+
+        if (p.slots[i] != 0)
+            break;
+    }
 }
