@@ -547,8 +547,11 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
 
     const auto& h = *(btrfs::header*)tree.data();
 
-    // FIXME - check csums
     // FIXME - use other chunk stripe if verification fails
+
+    // FIXME - print values
+    if (!check_tree_csum(h, sb))
+        throw formatted_error("{:x}: csum mismatch", addr);
 
     if (h.bytenr != addr)
         throw formatted_error("{:x}: address mismatch: expected {:x}, got {:x}", addr, addr, h.bytenr);
