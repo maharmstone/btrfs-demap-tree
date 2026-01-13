@@ -177,10 +177,44 @@ static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
     }
 }
 
+static void fill_in_backup_info(fs& f, uint64_t tree, btrfs::le64& addr,
+                                btrfs::le64& gen, uint8_t& level) {
+    auto [found_addr, found_gen, found_level] = find_tree_addr(f, tree);
+
+    addr = found_addr;
+    gen = found_gen;
+    level = found_level;
+}
+
+static void fill_in_superblock_backup(fs& f) {
+    auto& sb = f.dev.sb;
+
+    memmove(&sb.super_roots[1], &sb.super_roots[0],
+            (sb.super_roots.size() - 1) * sizeof(btrfs::root_backup));
+
+    auto& b = sb.super_roots[0];
+
+    b.tree_root = sb.root;
+    b.tree_root_gen = sb.generation;
+    b.tree_root_level = sb.root_level;
+    b.chunk_root = sb.chunk_root;
+    b.chunk_root_gen = sb.chunk_root_generation;
+    b.chunk_root_level = sb.chunk_root_level;
+    fill_in_backup_info(f, btrfs::EXTENT_TREE_OBJECTID, b.extent_root,
+                        b.extent_root_gen, b.extent_root_level);
+    fill_in_backup_info(f, btrfs::FS_TREE_OBJECTID, b.fs_root,
+                        b.fs_root_gen, b.fs_root_level);
+    fill_in_backup_info(f, btrfs::DEV_TREE_OBJECTID, b.dev_root,
+                        b.dev_root_gen, b.dev_root_level);
+    fill_in_backup_info(f, btrfs::CSUM_TREE_OBJECTID, b.csum_root,
+                        b.csum_root_gen, b.csum_root_level);
+    b.total_bytes = sb.total_bytes;
+    b.bytes_used = sb.bytes_used;
+    b.num_devices = sb.num_devices;
+}
+
 static void write_superblocks(fs& f) {
     auto& d = f.dev;
-
-    // FIXME - sb backups
 
     for (auto a : btrfs::superblock_addrs) {
         if (a + sizeof(d.sb) > f.dev.sb.dev_item.total_bytes)
@@ -194,6 +228,8 @@ static void write_superblocks(fs& f) {
 
         d.f.write((char*)&d.sb, sizeof(d.sb));
     }
+
+    fill_in_superblock_backup(f);
 }
 
 static void change_fst_extent_count(fs& f, uint64_t start, int32_t change) {
@@ -1449,6 +1485,8 @@ static void demap(const filesystem::path& fn) {
 
     load_sys_chunks(f);
     load_chunks(f);
+
+    fill_in_superblock_backup(f);
 
     // FIXME - die if transaction log there?
 
