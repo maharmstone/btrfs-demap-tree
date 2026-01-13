@@ -404,8 +404,14 @@ export bool prev_item(fs& f, path& p, bool cow) {
 
 export bool next_item(fs& f, path& p, bool cow) {
     if (p.slots[0] != path_nritems(p, 0) - 1) {
-        if (cow)
-            cow_tree(f, p, 0); // FIXME - also COW parents
+        if (cow) {
+            for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
+                if (p.bufs[k].empty())
+                    continue;
+
+                cow_tree(f, p, k);
+            }
+        }
 
         p.slots[0]++;
         return true;
@@ -435,8 +441,14 @@ export bool next_item(fs& f, path& p, bool cow) {
             p.bufs[h.level - 1] = span((uint8_t*)f.tree_cache.find(it.blockptr)->second.data(),
                                        sb.nodesize);
 
-            if (cow)
-                cow_tree(f, p, j); // FIXME - also COW parents
+            if (cow) {
+                for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
+                    if (p.bufs[k].empty())
+                        continue;
+
+                    cow_tree(f, p, k);
+                }
+            }
 
             p.slots[j - 1] = 0;
         }
