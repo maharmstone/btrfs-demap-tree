@@ -345,8 +345,14 @@ static uint32_t path_nritems(const path& p, uint8_t level) {
 
 export bool prev_item(fs& f, path& p, bool cow) {
     if (p.slots[0] != 0) {
-        if (cow)
-            cow_tree(f, p, 0); // FIXME - also COW parents
+        if (cow) {
+            for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
+                if (p.bufs[k].empty())
+                    continue;
+
+                cow_tree(f, p, k);
+            }
+        }
 
         p.slots[0]--;
         return true;
@@ -369,13 +375,21 @@ export bool prev_item(fs& f, path& p, bool cow) {
             auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
             auto& it = items[p.slots[j]];
 
+            assert(h.level == j);
+
             read_metadata(f, it.blockptr, h.level - 1);
 
             p.bufs[h.level - 1] = span((uint8_t*)f.tree_cache.find(it.blockptr)->second.data(),
                                        sb.nodesize);
 
-            if (cow)
-                cow_tree(f, p, j); // FIXME - also COW parents
+            if (cow) {
+                for (int8_t k = btrfs::MAX_LEVEL - 1; k >= h.level - 1; k--) {
+                    if (p.bufs[k].empty())
+                        continue;
+
+                    cow_tree(f, p, k);
+                }
+            }
 
             p.slots[j - 1] = path_nritems(p, j - 1) - 1;
         }
