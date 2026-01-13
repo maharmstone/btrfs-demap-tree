@@ -60,13 +60,13 @@ export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
 export void read_metadata(fs& f, uint64_t addr, uint8_t level);
 
-export pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
+export tuple<uint64_t, uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
 
     if (tree == btrfs::CHUNK_TREE_OBJECTID)
-        return { sb.chunk_root, sb.chunk_root_level };
+        return { sb.chunk_root, sb.chunk_root_generation, sb.chunk_root_level };
     else if (tree == btrfs::ROOT_TREE_OBJECTID)
-        return { sb.root, sb.root_level };
+        return { sb.root, sb.generation, sb.root_level };
 
     auto [key, data] = find_item(f, btrfs::ROOT_TREE_OBJECTID, { tree, btrfs::key_type::ROOT_ITEM, 0 }, false);
 
@@ -80,7 +80,7 @@ export pair<uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
 
     const auto& ri = *(btrfs::root_item*)data.data();
 
-    return { ri.bytenr, ri.level };
+    return { ri.bytenr, ri.generation, ri.level };
 }
 
 static uint64_t allocate_metadata(fs& f, uint64_t tree) {
@@ -276,7 +276,7 @@ export span<uint8_t> item_span(path& p) {
 
 export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow) {
-    auto [addr, level] = find_tree_addr(f, tree);
+    auto [addr, gen, level] = find_tree_addr(f, tree);
     path p;
 
     find_item2(f, addr, level, key, cow, tree, p);
@@ -471,7 +471,7 @@ export uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap) {
     bool moved_back = false;
     btrfs::key key{addr, btrfs::key_type::IDENTITY_REMAP, 0};
 
-    auto [remap_addr, remap_level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
+    auto [remap_addr, remap_gen, remap_level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
     path p;
 
     find_item2(f, remap_addr, remap_level, key, false,
@@ -601,7 +601,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
                               key, tree, size);
     }
 
-    auto [addr, level] = find_tree_addr(f, tree);
+    auto [addr, gen, level] = find_tree_addr(f, tree);
     path p;
 
     find_item2(f, addr, level, key, true, tree, p);
@@ -686,7 +686,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 }
 
 static btrfs::uuid get_chunk_tree_uuid(fs& f) {
-    auto [addr, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
+    auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
     path p;
 
     find_item2(f, addr, level, {0, (btrfs::key_type)0, 0}, false,
@@ -801,7 +801,7 @@ export void delete_item2(fs& f, path& p) {
 }
 
 export void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
-    auto [addr, level] = find_tree_addr(f, tree);
+    auto [addr, gen, level] = find_tree_addr(f, tree);
     path p;
 
     find_item2(f, addr, level, key, true, tree, p);
