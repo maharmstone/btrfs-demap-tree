@@ -551,13 +551,13 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
     // FIXME - use other chunk stripe if verification fails
 
     if (h.bytenr != addr)
-        throw formatted_error("Address mismatch: expected {:x}, got {:x}", addr, h.bytenr);
+        throw formatted_error("{:x}: address mismatch: expected {:x}, got {:x}", addr, addr, h.bytenr);
 
     if (h.level != level)
-        throw formatted_error("Level mismatch: expected {:x}, got {:x}", level, h.level);
+        throw formatted_error("{:x}: level mismatch: expected {:x}, got {:x}", addr, level, h.level);
 
     if (h.generation != gen)
-        throw formatted_error("Generation mismatch: expected {:x}, got {:x}", gen, h.generation);
+        throw formatted_error("{:x}: generation mismatch: expected {:x}, got {:x}", addr, gen, h.generation);
 
     f.tree_cache.emplace(make_pair(addr, tree));
 }
