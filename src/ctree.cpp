@@ -776,7 +776,23 @@ export void delete_item2(fs& f, path& p) {
             sizeof(btrfs::item) * (h.nritems - p.slots[0] - 1));
     h.nritems--;
 
-    // FIXME - update parents if deleting first item
+    if (p.slots[0] == 0) {
+        auto new_key = items[0].key;
+
+        for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
+            if (p.bufs[i].empty())
+                break;
+
+            const auto& h = *(btrfs::header*)p.bufs[i].data();
+            auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+            auto& it = items[p.slots[i]];
+
+            it.key = new_key;
+
+            if (p.slots[i] != 0)
+                break;
+        }
+    }
 
     // FIXME - if nritems is now 0 and not top, remove entry in parent
     // FIXME - adjust levels if internal tree has only one entry
