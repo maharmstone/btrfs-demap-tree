@@ -15,7 +15,8 @@ target_sources(demap-tree PUBLIC FILE_SET CXX_MODULES FILES
     src/cxxbtrfs.cpp
     src/formatted_error.cpp
     src/ctree.cpp
-    src/little_endian.cpp)
+    src/little_endian.cpp
+    src/crc32c.cpp)
 
 target_compile_options(demap-tree PUBLIC -Wall -Wextra -Wno-unqualified-std-cast-call -Wno-missing-field-initializers)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
