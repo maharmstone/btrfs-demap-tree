@@ -70,7 +70,7 @@ static void walk_tree(fs& f, uint64_t tree, optional<btrfs::key> from,
                       const function<bool(const btrfs::key&, span<const uint8_t>)>& func) {
     auto [addr, gen, level] = find_tree_addr(f, tree);
 
-    walk_tree2(f, addr, level, func, from);
+    walk_tree2(f, addr, gen, level, func, from);
 }
 
 static void load_chunks(fs& f) {
@@ -255,7 +255,8 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
     path p;
     btrfs::key key{start, btrfs::key_type::FREE_SPACE_EXTENT, 0};
 
-    find_item2(f, addr, level, key, true, btrfs::FREE_SPACE_TREE_OBJECTID, p);
+    find_item2(f, addr, gen, level, key, true,
+               btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
     {
         const auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -298,7 +299,8 @@ static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
         path p;
         btrfs::key key{start, btrfs::key_type::FREE_SPACE_EXTENT, 0};
 
-        find_item2(f, addr, level, key, true, btrfs::FREE_SPACE_TREE_OBJECTID, p);
+        find_item2(f, addr, gen, level, key, true,
+                   btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
@@ -390,7 +392,8 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
                            0xffffffffffffffff };
     path p;
 
-    find_item2(f, addr, level, key, false, btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+    find_item2(f, addr, gen, level, key, false,
+               btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
 
     if (!prev_item(f, p, true))
         throw runtime_error("update_block_group_used: prev_item failed");
@@ -454,7 +457,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
 
         path p;
 
-        find_item2(f, addr, level, key, false,
+        find_item2(f, addr, gen, level, key, false,
                    btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
 
         if (!prev_item(f, p, true))
@@ -494,7 +497,8 @@ static void remove_chunk(fs& f, uint64_t offset) {
                        btrfs::key_type::CHUNK_ITEM, offset};
         path p;
 
-        find_item2(f, addr, level, key, true, btrfs::CHUNK_TREE_OBJECTID, p);
+        find_item2(f, addr, gen, level, key, true,
+                   btrfs::CHUNK_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
 
@@ -546,7 +550,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
         btrfs::key key{offset, btrfs::key_type::FREE_SPACE_INFO, length};
         path p;
 
-        find_item2(f, addr, level, key, true,
+        find_item2(f, addr, gen, level, key, true,
                    btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -575,7 +579,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
         btrfs::key key{offset, btrfs::key_type::FREE_SPACE_EXTENT, 0};
         path p;
 
-        find_item2(f, addr, level, key, true,
+        find_item2(f, addr, gen, level, key, true,
                    btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -761,7 +765,8 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
         auto [addr, gen, level] = find_tree_addr(f, btrfs::CHUNK_TREE_OBJECTID);
         path p;
 
-        find_item2(f, addr, level, key, true, btrfs::CHUNK_TREE_OBJECTID, p);
+        find_item2(f, addr, gen, level, key, true,
+                   btrfs::CHUNK_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
 
@@ -883,7 +888,8 @@ static void update_block_group_remap_bytes(fs& f, uint64_t address, int64_t delt
                            0xffffffffffffffff };
     path p;
 
-    find_item2(f, addr, level, key, false, btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+    find_item2(f, addr, gen, level, key, false,
+               btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
 
     if (!prev_item(f, p, true))
         throw runtime_error("update_block_group_remap_bytes: prev_item failed");
@@ -929,7 +935,8 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
         path p;
         btrfs::key key{src_addr, btrfs::key_type::REMAP, 0xffffffffffffffff};
 
-        find_item2(f, addr, level, key, false, btrfs::REMAP_TREE_OBJECTID, p);
+        find_item2(f, addr, gen, level, key, false,
+                   btrfs::REMAP_TREE_OBJECTID, p);
 
         if (!prev_item(f, p, true))
             throw formatted_error("remove_from_remap_tree: prev_item failed");
@@ -966,7 +973,8 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
         path p;
         btrfs::key key{dest_addr, btrfs::key_type::REMAP_BACKREF, found_key.offset};
 
-        find_item2(f, addr, level, key, true, btrfs::REMAP_TREE_OBJECTID, p);
+        find_item2(f, addr, gen, level, key, true,
+                   btrfs::REMAP_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
 
@@ -1002,7 +1010,8 @@ static void update_block_group_identity_remap_count(fs& f, uint64_t address,
                            0xffffffffffffffff };
     path p;
 
-    find_item2(f, addr, level, key, false, btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
+    find_item2(f, addr, gen, level, key, false,
+               btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
 
     if (!prev_item(f, p, true))
         throw runtime_error("update_block_group_identity_remap_count: prev_item failed");
@@ -1038,7 +1047,8 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
         path p;
         btrfs::key key{src_addr, btrfs::key_type::IDENTITY_REMAP, 0};
 
-        find_item2(f, addr, level, key, true, btrfs::REMAP_TREE_OBJECTID, p);
+        find_item2(f, addr, gen, level, key, true,
+                   btrfs::REMAP_TREE_OBJECTID, p);
 
         const auto& h = *(btrfs::header*)p.bufs[0].data();
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
@@ -1129,7 +1139,7 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
         auto [addr, gen, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
         path p;
 
-        find_item2(f, addr, level, { cursor, btrfs::key_type::REMAP, 0 },
+        find_item2(f, addr, gen, level, { cursor, btrfs::key_type::REMAP, 0 },
                    false, btrfs::REMAP_TREE_OBJECTID, p);
 
         auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -1174,7 +1184,7 @@ static void finish_off_bg(fs& f, uint64_t offset, uint64_t length) {
         auto [addr, gen, level] = find_tree_addr(f, btrfs::REMAP_TREE_OBJECTID);
         path p;
 
-        find_item2(f, addr, level, { offset, (btrfs::key_type)0, 0}, false,
+        find_item2(f, addr, gen, level, { offset, (btrfs::key_type)0, 0}, false,
                    btrfs::REMAP_TREE_OBJECTID, p);
 
         do {
@@ -1351,7 +1361,7 @@ static void shorten_block_group_items(fs& f) {
     auto [addr, gen, level] = find_tree_addr(f, btrfs::BLOCK_GROUP_TREE_OBJECTID);
     path p;
 
-    find_item2(f, addr, level, { 0, (btrfs::key_type)0, 0}, true,
+    find_item2(f, addr, gen, level, { 0, (btrfs::key_type)0, 0}, true,
                btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
 
     do {
@@ -1461,7 +1471,7 @@ static void demap(const filesystem::path& fn) {
                                   remap_tree_level);
         }
 
-        find_item2(f, remap_tree_addr, remap_tree_level,
+        find_item2(f, remap_tree_addr, remap_tree_gen, remap_tree_level,
                    {0, (btrfs::key_type)0, 0}, false, btrfs::REMAP_TREE_OBJECTID,
                    p);
 
