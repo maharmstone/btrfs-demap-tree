@@ -21,7 +21,7 @@ def le_pretty_printer_func(val):
 
     match = re.match("^(.*?)<", type.name)
     if match:
-        if match.group(1) == "little_endian@cxxbtrfs":
+        if match.group(1) == "little_endian@little_endian":
             return le_pretty_printer(val)
 
     return None
