@@ -246,6 +246,12 @@ export void find_item2(fs& f, uint64_t addr, uint8_t level, const btrfs::key& ke
     } else {
         auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
 
+        if (h.nritems > 0 && key < items[0].key) {
+            p.slots[h.level] = 0;
+            find_item2(f, items[0].blockptr, level - 1, key, cow, tree, p);
+            return;
+        }
+
         for (size_t i = 0; i < h.nritems - 1; i++) {
             if (key >= items[i].key && key < items[i + 1].key) {
                 p.slots[h.level] = i;
