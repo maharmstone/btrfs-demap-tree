@@ -599,6 +599,82 @@ export void walk_tree2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
     }
 }
 
+static unsigned int find_midpoint(const btrfs::header& th, size_t total,
+                                  size_t& sum) {
+    auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
+
+    sum = 0;
+
+    for (unsigned int i = 0; i < th.nritems; i++) {
+        if (sum + sizeof(btrfs::item) + items[i].size > total / 2)
+            return i;
+
+        sum += sizeof(btrfs::item) + items[i].size;
+    }
+
+    return th.nritems - 1;
+}
+
+static void split_tree_at(fs& fs, path& p, uint64_t tree,
+                          unsigned int split_point) {
+    throw runtime_error("FIXME - split_tree_at");
+}
+
+static void split_tree(fs& fs, path& p, uint64_t tree, size_t size_used,
+                       size_t space_needed) {
+    // FIXME - first try to push left and right
+
+    auto nodesize = fs.dev.sb.nodesize;
+    auto& th = *(btrfs::header*)p.bufs[0].data();
+    auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
+
+    size_t sum;
+    auto split_point = find_midpoint(th, size_used, sum);
+    bool need_double_split = false;
+
+    if (p.slots[0] >= split_point)
+        sum = size_used - sum;
+
+    if (nodesize - sizeof(btrfs::header) - sum < space_needed) {
+        if (p.slots[0] < split_point) {
+            while (split_point > 0) {
+                sum += sizeof(btrfs::item) + items[split_point - 1].size;
+                split_point--;
+
+                if (nodesize - sizeof(btrfs::header) - sum >= space_needed)
+                    break;
+            }
+
+            if (split_point == 0)
+                need_double_split = true;
+        } else {
+            while (split_point < th.nritems) {
+                sum += sizeof(btrfs::item) + items[split_point].size;
+                split_point++;
+
+                if (nodesize - sizeof(btrfs::header) - sum >= space_needed)
+                    break;
+            }
+
+            if (split_point == th.nritems)
+                need_double_split = true;
+        }
+    }
+
+    if (!need_double_split) {
+        split_tree_at(fs, p, tree, split_point);
+        return;
+    }
+
+    if (p.slots[0] != 0)
+        split_tree_at(fs, p, tree, p.slots[0]);
+
+    auto num_items = ((btrfs::header*)p.bufs[0].data())->nritems;
+
+    if (num_items != 0 && p.slots[0] < num_items - 1)
+        split_tree_at(fs, p, tree, p.slots[0]);
+}
+
 export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
                                  uint32_t size) {
     auto& sb = f.dev.sb;
@@ -635,7 +711,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
         unsigned int size_used = data_size + (unsigned int)(h.nritems * sizeof(btrfs::item));
 
         if (size_used + sizeof(btrfs::item) + size > sb.nodesize - sizeof(btrfs::header))
-            throw runtime_error("insert_item: FIXME - split tree"); // FIXME
+            split_tree(f, p, tree, size_used, sizeof(btrfs::item) + size);
     }
 
     // insert new btrfs::item
