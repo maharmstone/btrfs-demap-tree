@@ -60,6 +60,9 @@ export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
 export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level);
 
+static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
+                                 const btrfs::key& k, uint64_t address);
+
 export tuple<uint64_t, uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
 
@@ -696,6 +699,51 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
     }
 }
 
+static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
+    auto& sb = f.dev.sb;
+    auto& th = *(btrfs::header*)p.bufs[level].data();
+    unsigned int split_point = th.nritems / 2;
+
+    assert(level < btrfs::MAX_LEVEL - 2);
+
+    auto new_addr = allocate_metadata(f, tree);
+
+    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+
+    auto& new_tree = it->second;
+
+    new_tree.resize(sb.nodesize);
+
+    auto& th2 = *(btrfs::header*)new_tree.data();
+
+    memcpy(&th2, &th, sizeof(btrfs::header));
+    th2.bytenr = new_addr;
+    th2.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
+    th2.nritems = th.nritems - split_point;
+
+    auto* items = (btrfs::key_ptr*)((uint8_t*)&th + sizeof(btrfs::header));
+    auto* items2 = (btrfs::key_ptr*)((uint8_t*)&th2 + sizeof(btrfs::header));
+
+    memcpy(items2, &items[split_point], th2.nritems * sizeof(btrfs::key_ptr));
+    th.nritems = split_point;
+
+    f.ref_changes.emplace(new_addr, ref_change{th2.owner, 1});
+
+    if (p.bufs[level + 1].empty())
+        add_new_level(f, p, tree, level + 1);
+
+    p.slots[level + 1]++;
+
+    insert_internal_node(f, p, tree, level + 1, items2[0].key, new_addr);
+
+    if (p.slots[level] < split_point)
+        p.slots[level + 1]--;
+    else {
+        p.slots[level] -= split_point;
+        p.bufs[level] = span((uint8_t*)new_tree.data(), sb.nodesize);
+    }
+}
+
 static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
                                  const btrfs::key& k, uint64_t address) {
     auto& sb = f.dev.sb;
@@ -704,9 +752,8 @@ static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
     {
         auto& th = *(btrfs::header*)p.bufs[level].data();
 
-        if (th.nritems == max_items) {
-            // FIXME - split_internal_tree
-        }
+        if (th.nritems == max_items)
+            split_internal_tree(f, p, tree, level);
     }
 
     auto& th = *(btrfs::header*)p.bufs[level].data();
