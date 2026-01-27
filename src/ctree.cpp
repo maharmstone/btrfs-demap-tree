@@ -615,9 +615,94 @@ static unsigned int find_midpoint(const btrfs::header& th, size_t total,
     return th.nritems - 1;
 }
 
-static void split_tree_at(fs& fs, path& p, uint64_t tree,
+static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
+                                 const btrfs::key& k, uint64_t address) {
+    auto& sb = f.dev.sb;
+    size_t max_items = (sb.nodesize - sizeof(btrfs::header)) / sizeof(btrfs::key_ptr);
+
+    {
+        auto& th = *(btrfs::header*)p.bufs[level].data();
+
+        if (th.nritems == max_items) {
+            // FIXME - split_internal_tree
+        }
+    }
+
+    auto& th = *(btrfs::header*)p.bufs[level].data();
+
+    auto* items = (btrfs::key_ptr*)((uint8_t*)&th + sizeof(btrfs::header));
+
+    memmove(&items[p.slots[level] + 1], &items[p.slots[level]],
+            (th.nritems - p.slots[level]) * sizeof(btrfs::key_ptr));
+
+    items[p.slots[level]].key = k;
+    items[p.slots[level]].blockptr = address;
+    items[p.slots[level]].generation = sb.generation + 1;
+
+    th.nritems++;
+}
+
+static void split_tree_at(fs& f, path& p, uint64_t tree,
                           unsigned int split_point) {
-    throw runtime_error("FIXME - split_tree_at");
+    auto& sb = f.dev.sb;
+
+    auto new_addr = allocate_metadata(f, tree);
+
+    auto& th = *(btrfs::header*)p.bufs[0].data();
+    auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
+    size_t to_copy = 0, total_data = 0;
+
+    for (unsigned int i = 0; i < th.nritems; i++) {
+        total_data += items[i].size;
+
+        if (i >= split_point)
+            to_copy += items[i].size;
+    }
+
+    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+
+    auto& new_tree = it->second;
+
+    new_tree.resize(sb.nodesize);
+    memcpy(new_tree.data(), p.bufs[0].data(), sizeof(btrfs::header));
+
+    auto& th2 = *(btrfs::header*)new_tree.data();
+    th2.bytenr = new_addr;
+    th2.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
+    th2.nritems = th.nritems - split_point;
+
+    // copy btrfs::item items
+    auto* items2 = (btrfs::item*)((uint8_t*)&th2 + sizeof(btrfs::header));
+    memcpy(items2, &items[split_point], sizeof(btrfs::item) * (th.nritems - split_point));
+
+    // move trailing entries to new tree
+    memcpy(new_tree.data() + sb.nodesize - to_copy,
+           p.bufs[0].data() + sb.nodesize - total_data, to_copy);
+
+    for (unsigned int i = 0; i < th2.nritems; i++) {
+        items2[i].offset += (uint32_t)(total_data - to_copy);
+    }
+
+    th.nritems = split_point;
+
+    memset(new_tree.data() + sizeof(btrfs::header) + (th2.nritems * sizeof(btrfs::item)),
+           0, sb.nodesize - to_copy - sizeof(btrfs::header) - (th2.nritems * sizeof(btrfs::item)));
+
+    f.ref_changes.emplace(new_addr, ref_change{th.owner, 1});
+
+    if (p.bufs[1].empty()) {
+        // FIXME - add_new_level
+    }
+
+    p.slots[1]++;
+    insert_internal_node(f, p, tree, 1, items2[0].key, new_addr);
+
+    if (p.slots[0] < split_point || split_point == 0)
+        p.slots[1]--;
+    else {
+        p.slots[0] -= split_point;
+        p.bufs[0] = span((uint8_t*)new_tree.data(), sb.nodesize);
+    }
 }
 
 static void split_tree(fs& fs, path& p, uint64_t tree, size_t size_used,
@@ -689,30 +774,35 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     find_item2(f, addr, gen, level, key, true, tree, p);
 
-    auto& h = *(btrfs::header*)p.bufs[0].data();
-    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-
-    // FIXME - make sure this works if tree is currently empty
-
-    if (p.slots[0] < h.nritems && key == items[p.slots[0]].key) {
-        throw formatted_error("insert_item: key {} in tree {:x} already exists",
-                              key, tree);
-    }
-
-    assert(p.slots[0] <= h.nritems);
-
     {
-        unsigned int data_size = 0;
+        auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
-        for (uint32_t i = 0; i < h.nritems; i++) {
-            data_size += items[i].size;
+        // FIXME - make sure this works if tree is currently empty
+
+        if (p.slots[0] < h.nritems && key == items[p.slots[0]].key) {
+            throw formatted_error("insert_item: key {} in tree {:x} already exists",
+                                key, tree);
         }
 
-        unsigned int size_used = data_size + (unsigned int)(h.nritems * sizeof(btrfs::item));
+        assert(p.slots[0] <= h.nritems);
 
-        if (size_used + sizeof(btrfs::item) + size > sb.nodesize - sizeof(btrfs::header))
-            split_tree(f, p, tree, size_used, sizeof(btrfs::item) + size);
+        {
+            unsigned int data_size = 0;
+
+            for (uint32_t i = 0; i < h.nritems; i++) {
+                data_size += items[i].size;
+            }
+
+            unsigned int size_used = data_size + (unsigned int)(h.nritems * sizeof(btrfs::item));
+
+            if (size_used + sizeof(btrfs::item) + size > sb.nodesize - sizeof(btrfs::header))
+                split_tree(f, p, tree, size_used, sizeof(btrfs::item) + size);
+        }
     }
+
+    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     // insert new btrfs::item
 
