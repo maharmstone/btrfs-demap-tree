@@ -615,6 +615,87 @@ static unsigned int find_midpoint(const btrfs::header& th, size_t total,
     return th.nritems - 1;
 }
 
+static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
+    auto& sb = f.dev.sb;
+    btrfs::key first_key;
+
+    auto new_addr = allocate_metadata(f, tree);
+
+    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+
+    auto& new_tree = it->second;
+
+    new_tree.resize(sb.nodesize);
+
+    memcpy(new_tree.data(), p.bufs[level - 1].data(), sizeof(btrfs::header));
+
+    auto& th = *(btrfs::header*)p.bufs[level - 1].data();
+
+    if (level == 1) {
+        auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
+
+        first_key = items[0].key;
+    } else {
+        auto* items = (btrfs::key_ptr*)((uint8_t*)&th + sizeof(btrfs::header));
+
+        first_key = items[0].key;
+    }
+
+    auto& th2 = *(btrfs::header*)new_tree.data();
+    th2.bytenr = new_addr;
+    th2.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
+    th2.level = level;
+    th2.nritems = 1;
+
+    f.ref_changes.emplace(new_addr, ref_change{th2.owner, 1});
+
+    auto* items2 = (btrfs::key_ptr*)((uint8_t*)&th2 + sizeof(btrfs::header));
+
+    items2[0].key = first_key;
+    items2[0].blockptr = th.bytenr;
+    items2[0].generation = sb.generation + 1;
+
+    memset(&items2[1], 0, sb.nodesize - sizeof(btrfs::header) - sizeof(btrfs::key_ptr));
+
+    p.bufs[level] = span((uint8_t*)new_tree.data(), sb.nodesize);
+    p.slots[level] = 0;
+
+    if (th2.owner == btrfs::CHUNK_TREE_OBJECTID) {
+        sb.chunk_root = th2.bytenr;
+        sb.chunk_root_generation = sb.generation + 1;
+        sb.chunk_root_level = level;
+    } else if (th2.owner == btrfs::ROOT_TREE_OBJECTID) {
+        sb.root = th2.bytenr;
+        sb.root_level = level;
+    } else {
+        btrfs::key key{th2.owner, btrfs::key_type::ROOT_ITEM, 0};
+
+        auto [found_key, sp] = find_item(f, btrfs::ROOT_TREE_OBJECTID,
+                                         key, true);
+
+        if (key.objectid != found_key.objectid || key.type != found_key.type)
+            throw formatted_error("could not find item {} in root tree", key);
+
+        if (sp.size() < sizeof(btrfs::root_item)) {
+            throw formatted_error("{} in root tree was {} bytes, expected {}\n",
+                                  found_key, sp.size(), sizeof(btrfs::root_item));
+        }
+
+        auto& ri = reinterpret_cast<btrfs::root_item&>(*sp.data());
+
+        ri.bytenr = th2.bytenr;
+        ri.generation = sb.generation + 1;
+        ri.generation_v2 = ri.generation;
+        ri.level = level;
+
+        if (th2.owner == btrfs::REMAP_TREE_OBJECTID) {
+            sb.remap_root = th2.bytenr;
+            sb.remap_root_generation = sb.generation + 1;
+            sb.remap_root_level = level;
+        }
+    }
+}
+
 static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
                                  const btrfs::key& k, uint64_t address) {
     auto& sb = f.dev.sb;
@@ -690,9 +771,8 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
 
     f.ref_changes.emplace(new_addr, ref_change{th.owner, 1});
 
-    if (p.bufs[1].empty()) {
-        // FIXME - add_new_level
-    }
+    if (p.bufs[1].empty())
+        add_new_level(f, p, tree, 1);
 
     p.slots[1]++;
     insert_internal_node(f, p, tree, 1, items2[0].key, new_addr);
