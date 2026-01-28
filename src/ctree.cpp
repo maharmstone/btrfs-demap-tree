@@ -1121,7 +1121,8 @@ export void delete_item2(fs& f, path& p) {
             if (p.slots[i] != 0)
                 break;
         }
-    }
+    } else
+        p.slots[0]--;
 
     if (h.nritems == 0)
         delete_internal_node(f, p, 1);
