@@ -354,6 +354,23 @@ export uint32_t path_nritems(const path& p, uint8_t level) {
     return h.nritems;
 }
 
+export btrfs::key path_key(const path& p, uint8_t level) {
+    const auto& h = *(btrfs::header*)p.bufs[level].data();
+
+    assert(!p.bufs[level].empty());
+    assert(p.slots[level] < h.nritems);
+
+    if (level == 0) {
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+        return items[p.slots[level]].key;
+    } else {
+        auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+
+        return items[p.slots[level]].key;
+    }
+}
+
 export bool prev_item(fs& f, path& p, bool cow) {
     if (p.slots[0] != 0) {
         if (cow) {
