@@ -1088,6 +1088,9 @@ static void delete_internal_node(fs& f, path& p, uint8_t level) {
 
     // FIXME - do next level as well if necessary
     // FIXME - setting new top level
+
+    if (p.slots[level] > 0)
+        p.slots[level]--;
 }
 
 export void delete_item2(fs& f, path& p) {
