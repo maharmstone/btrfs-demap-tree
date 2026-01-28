@@ -1048,6 +1048,31 @@ export void add_tree(fs& f, uint64_t num) {
     ri.generation_v2 = ri.generation;
 }
 
+static void delete_internal_node(fs& f, path& p, uint8_t level) {
+    assert(!p.bufs[level].empty());
+
+    auto& h = *(btrfs::header*)p.bufs[level].data();
+    auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[level].data() + sizeof(btrfs::header));
+    auto slot = p.slots[level];
+
+    assert(slot < h.nritems);
+
+    {
+        auto [it2, inserted] = f.ref_changes.emplace(items[slot].blockptr,
+                                                     ref_change{h.owner, -1});
+
+        if (!inserted)
+            it2->second.refcount_change--;
+    }
+
+    memmove(&items[slot], &items[slot + 1],
+            sizeof(btrfs::key_ptr) * (h.nritems - slot - 1));
+    h.nritems--;
+
+    // FIXME - do next level as well if necessary
+    // FIXME - setting new top level
+}
+
 export void delete_item2(fs& f, path& p) {
     auto& sb = f.dev.sb;
     auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -1098,10 +1123,10 @@ export void delete_item2(fs& f, path& p) {
         }
     }
 
-    // FIXME - if nritems is now 0 and not top, remove entry in parent
-    // FIXME - adjust levels if internal tree has only one entry
-    // FIXME - merging trees
-    // FIXME - make sure path still valid if we have to rearrange things
+    if (h.nritems == 0)
+        delete_internal_node(f, p, 1);
+
+    // FIXME - merging trees?
 }
 
 export void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
