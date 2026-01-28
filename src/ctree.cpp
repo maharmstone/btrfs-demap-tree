@@ -348,7 +348,7 @@ export string read_data(fs& f, uint64_t addr, uint64_t size) {
     return ret;
 }
 
-static uint32_t path_nritems(const path& p, uint8_t level) {
+export uint32_t path_nritems(const path& p, uint8_t level) {
     const auto& h = *(btrfs::header*)p.bufs[level].data();
 
     return h.nritems;
