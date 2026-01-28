@@ -413,21 +413,7 @@ export bool prev_item(fs& f, path& p, bool cow) {
     return false;
 }
 
-export bool next_item(fs& f, path& p, bool cow) {
-    if (p.slots[0] != path_nritems(p, 0) - 1) {
-        if (cow) {
-            for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
-                if (p.bufs[k].empty())
-                    continue;
-
-                cow_tree(f, p, k);
-            }
-        }
-
-        p.slots[0]++;
-        return true;
-    }
-
+export bool next_leaf(fs& f, path& p, bool cow) {
     auto orig_p = p;
 
     for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
@@ -470,6 +456,24 @@ export bool next_item(fs& f, path& p, bool cow) {
     p = orig_p;
 
     return false;
+}
+
+export bool next_item(fs& f, path& p, bool cow) {
+    if (p.slots[0] != path_nritems(p, 0) - 1) {
+        if (cow) {
+            for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
+                if (p.bufs[k].empty())
+                    continue;
+
+                cow_tree(f, p, k);
+            }
+        }
+
+        p.slots[0]++;
+        return true;
+    }
+
+    return next_leaf(f, p, cow);
 }
 
 export uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap) {
