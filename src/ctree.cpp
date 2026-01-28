@@ -884,7 +884,7 @@ static void split_tree(fs& fs, path& p, uint64_t tree, size_t size_used,
     auto num_items = ((btrfs::header*)p.bufs[0].data())->nritems;
 
     if (num_items != 0 && p.slots[0] < num_items - 1)
-        split_tree_at(fs, p, tree, p.slots[0]);
+        split_tree_at(fs, p, tree, p.slots[0] + 1);
 }
 
 export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
