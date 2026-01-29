@@ -1334,6 +1334,42 @@ static void demap_bg(fs& f, uint64_t offset) {
     finish_off_bg(f, offset, c.c.length);
 }
 
+static void load_fst_bitmap(fs& f, vector<pair<uint64_t, uint64_t>>& c,
+                            span<const uint8_t> s, uint64_t offset) {
+    auto& sb = f.dev.sb;
+    auto sector_size = sb.sectorsize;
+
+    uint64_t run_start = 0;
+    bool last_zero = true;
+
+    for (size_t i = 0; i < s.size(); i++) {
+        auto b = s[i];
+
+        for (unsigned int j = 0; j < 8; j++) {
+            if (b & 1) {
+                if (last_zero)
+                    run_start = (i * 8) + j;
+
+                last_zero = false;
+            } else {
+                if (!last_zero) {
+                    c.emplace_back(offset + (run_start * sector_size),
+                                   (((i * 8) + j) - run_start) * sector_size);
+                }
+
+                last_zero = true;
+            }
+
+            b >>= 1;
+        }
+    }
+
+    if (!last_zero) {
+        c.emplace_back(offset + (run_start * sector_size),
+                       ((s.size() * 8) - run_start) * sector_size);
+    }
+}
+
 static void load_fst(fs& f) {
     using vp = vector<pair<uint64_t, uint64_t>>;
 
@@ -1355,7 +1391,8 @@ static void load_fst(fs& f) {
                 break;
 
             case btrfs::key_type::FREE_SPACE_BITMAP:
-                throw formatted_error("FIXME - {} in FST\n", key);
+                load_fst_bitmap(f, *c, data, key.objectid);
+                break;
 
             default:
                 throw formatted_error("unexpected item {} in FST\n", key);
