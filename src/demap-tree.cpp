@@ -399,9 +399,65 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
                           start, len);
 }
 
+static void add_to_free_space_bitmap(fs& f, path& p, uint64_t start,
+                                     uint64_t len) {
+    auto& sb = f.dev.sb;
+    auto sector_size = sb.sectorsize;
+    auto key = path_key(p, 0);
+    auto s = item_span(p);
+
+    uint64_t offset = (start - key.objectid) / sector_size;
+    uint64_t sects = len / sector_size;
+
+    s = s.subspan(offset / 8);
+    offset %= 8;
+
+    // beginning
+
+    if (offset != 0 || sects < 8) {
+        uint8_t mask = ~((1 << offset) - 1);
+
+        if (offset + sects < 8) // only one byte
+            mask &= (1 << (offset + sects)) - 1;
+
+        assert((s[0] & mask) == 0); // assert all bits are 0
+        s[0] |= mask;
+
+        if (offset + sects <= 8)
+            return;
+
+        s = s.subspan(1);
+        sects -= 8 - offset;
+    }
+
+    // middle
+
+    if (sects >= 8) {
+#ifndef NDEBUG
+        // assert that all bytes are zero
+        for (unsigned int i = 0; i < sects / 8; i++) {
+            assert(s[i] == 0);
+        }
+#endif
+        memset(s.data(), 0xff, sects / 8);
+        s = s.subspan(sects / 8);
+        sects %= 8;
+    }
+
+    // end
+
+    if (sects != 0) {
+        uint8_t mask = (1 << sects) - 1;
+
+        assert((s[0] & mask) == 0); // assert all bits are 0
+        s[0] |= mask;
+    }
+}
+
 static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
     // FIXME - throw exception if part of range already free
-    // FIXME - bitmaps
+
+    // FIXME - crossing bitmap boundaries
 
     {
         auto [addr, gen, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
@@ -447,6 +503,13 @@ static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
 
         if (prev_item(f, p, true)) {
             auto& it = items[p.slots[0]];
+
+            if (it.key.type == btrfs::key_type::FREE_SPACE_BITMAP &&
+                it.key.objectid <= start &&
+                it.key.objectid + it.key.offset > start) {
+                add_to_free_space_bitmap(f, p, start, len);
+                return;
+            }
 
             if (it.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
                 it.key.objectid + it.key.offset == start) {
