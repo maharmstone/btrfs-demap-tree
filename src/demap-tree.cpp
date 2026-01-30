@@ -284,15 +284,70 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
     }
 }
 
-static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
-    // FIXME - bitmaps
+static void remove_from_free_space_bitmap(fs& f, path& p, uint64_t start,
+                                          uint64_t len) {
+    auto& sb = f.dev.sb;
+    auto sector_size = sb.sectorsize;
+    auto key = path_key(p, 0);
+    auto s = item_span(p);
 
+    uint64_t offset = (start - key.objectid) / sector_size;
+    uint64_t sects = len / sector_size;
+
+    s = s.subspan(offset / 8);
+    offset %= 8;
+
+    // beginning
+
+    if (offset != 0 || sects < 8) {
+        uint8_t mask = ~((1 << offset) - 1);
+
+        if (offset + sects < 8) // only one byte
+            mask &= (1 << (offset + sects)) - 1;
+
+        assert((s[0] & mask) == mask); // assert all bits are 1
+        s[0] &= ~mask;
+
+        if (offset + sects <= 8)
+            return;
+
+        s = s.subspan(1);
+        sects -= 8 - offset;
+    }
+
+    // middle
+
+    if (sects >= 8) {
+#ifndef NDEBUG
+        // assert that all bytes are 0xff
+        for (unsigned int i = 0; i < sects / 8; i++) {
+            assert(s[i] == 0xff);
+        }
+#endif
+        memset(s.data(), 0, sects / 8);
+        s = s.subspan(sects / 8);
+        sects %= 8;
+    }
+
+    // end
+
+    if (sects != 0) {
+        uint8_t mask = (1 << sects) - 1;
+
+        assert((s[0] & mask) == mask); // assert all bits are 1
+        s[0] &= ~mask;
+    }
+}
+
+static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
     auto [addr, gen, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
     path p;
     btrfs::key key{start, btrfs::key_type::FREE_SPACE_EXTENT, 0};
 
     find_item2(f, addr, gen, level, key, true,
                btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+    // FIXME - handle crossing bitmap boundary
 
     {
         const auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -301,10 +356,19 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
         if (p.slots[0] < h.nritems) {
             auto& it = items[p.slots[0]];
 
-            if (it.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
-                it.key.objectid <= start) {
-                remove_from_free_space2(f, p, start, len);
-                return;
+            if (it.key.objectid <= start) {
+                switch (it.key.type) {
+                    case btrfs::key_type::FREE_SPACE_EXTENT:
+                        remove_from_free_space2(f, p, start, len);
+                        return;
+
+                    case btrfs::key_type::FREE_SPACE_BITMAP:
+                        remove_from_free_space_bitmap(f, p, start, len);
+                        return;
+
+                    default:
+                        break;
+                }
             }
         }
     }
@@ -316,10 +380,19 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
-    if (it.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
-        it.key.objectid <= start) {
-        remove_from_free_space2(f, p, start, len);
-        return;
+    if (it.key.objectid <= start) {
+        switch (it.key.type) {
+            case btrfs::key_type::FREE_SPACE_EXTENT:
+                remove_from_free_space2(f, p, start, len);
+                return;
+
+            case btrfs::key_type::FREE_SPACE_BITMAP:
+                remove_from_free_space_bitmap(f, p, start, len);
+                return;
+
+            default:
+                break;
+        }
     }
 
     throw formatted_error("remove_from_free_space: error carving out {:x},{:x}",
