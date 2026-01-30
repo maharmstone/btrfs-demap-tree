@@ -1507,27 +1507,34 @@ static void load_fst_bitmap(fs& f, vector<pair<uint64_t, uint64_t>>& c,
 }
 
 static void load_fst(fs& f) {
-    using vp = vector<pair<uint64_t, uint64_t>>;
+    struct fst_info {
+        vector<pair<uint64_t, uint64_t>> extents;
+        bool using_bitmaps;
+    };
 
-    map<uint64_t, vp> fst;
-    vp* c = nullptr;
+    map<uint64_t, fst_info> fst;
+    fst_info* c = nullptr;
 
     walk_tree(f, btrfs::FREE_SPACE_TREE_OBJECTID, nullopt,
               [&](const btrfs::key& key, span<const uint8_t> data) {
         switch (key.type) {
             case btrfs::key_type::FREE_SPACE_INFO: {
-                auto [it, _] = fst.emplace((uint64_t)key.objectid, vp{});
+                auto& fsi = *(btrfs::free_space_info*)data.data();
+
+                auto [it, _] = fst.emplace((uint64_t)key.objectid, fst_info{});
 
                 c = &it->second;
+                c->using_bitmaps = fsi.flags & btrfs::FREE_SPACE_USING_BITMAPS;
+
                 break;
             }
 
             case btrfs::key_type::FREE_SPACE_EXTENT:
-                c->emplace_back(key.objectid, key.offset);
+                c->extents.emplace_back(key.objectid, key.offset);
                 break;
 
             case btrfs::key_type::FREE_SPACE_BITMAP:
-                load_fst_bitmap(f, *c, data, key.objectid);
+                load_fst_bitmap(f, c->extents, data, key.objectid);
                 break;
 
             default:
@@ -1560,7 +1567,8 @@ static void load_fst(fs& f) {
             continue;
         }
 
-        c.second.fst = move(e.second);
+        c.second.fst = move(e.second.extents);
+        c.second.fst_using_bitmaps = e.second.using_bitmaps;
 
         fst_it++;
     }

@@ -34,6 +34,7 @@ export struct chunk : btrfs::chunk {
 export struct chunk_info {
     chunk c;
     vector<pair<uint64_t, uint64_t>> fst;
+    bool fst_using_bitmaps = false;
 };
 
 export struct ref_change {
