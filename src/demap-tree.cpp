@@ -776,6 +776,97 @@ static void remove_chunk(fs& f, uint64_t offset) {
     }
 }
 
+static unsigned int count_bitmap_runs(span<uint8_t> sp) {
+    bool last_one = false;
+    unsigned int ret = 0;
+
+    while (!sp.empty()) {
+        auto b = sp[0];
+
+        for (unsigned int i = 0; i < 8; i++) {
+            if (b & 1) {
+                if (!last_one)
+                    ret++;
+
+                last_one = true;
+            } else
+                last_one = false;
+
+            b >>= 1;
+        }
+
+        sp = sp.subspan(1);
+    }
+
+    return ret;
+}
+
+static void changed_chunk(fs& f, uint64_t start) {
+    auto& sb = f.dev.sb;
+    auto sector_size = sb.sectorsize;
+
+    auto [off, c] = find_chunk(f, start);
+
+    if (!c.fst_using_bitmaps)
+        return;
+
+    auto [addr, gen, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
+    path p;
+    btrfs::key key{off, btrfs::key_type::FREE_SPACE_INFO, c.c.length};
+
+    find_item2(f, addr, gen, level, key, false, btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+    assert(key.objectid == off && key.type == btrfs::key_type::FREE_SPACE_INFO);
+
+    bool b = next_item(f, p, false);
+
+    assert(b);
+
+    uint64_t last_end = off;
+    unsigned int num_ranges = 0;
+    bool last_one = false;
+
+    while (true) {
+        auto key = path_key(p, 0);
+        auto sp = item_span(p);
+
+        if (key.objectid >= off + c.c.length)
+            break;
+
+        assert(key.type == btrfs::key_type::FREE_SPACE_BITMAP);
+        assert(sp.size() == key.offset / (sector_size * 8));
+        assert(key.objectid == last_end);
+
+        num_ranges += count_bitmap_runs(sp);
+
+        if (last_one && sp[0] & 1)
+            num_ranges--;
+
+        last_one = sp[sp.size() - 1] & 0x80;
+
+        last_end = key.objectid + key.offset;
+
+        if (!next_item(f, p, false))
+            break;
+    }
+
+    assert(last_end == off + c.c.length);
+
+    // FIXME - only update free space info if changed?
+
+    find_item2(f, addr, gen, level, key, true, btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+    assert(path_key(p, 0) == key);
+
+    auto sp = item_span(p);
+
+    assert(sp.size() == sizeof(btrfs::free_space_info));
+
+    auto& fsi = *(btrfs::free_space_info*)sp.data();
+
+    fsi.extent_count = num_ranges;
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
@@ -796,6 +887,13 @@ static void flush_transaction(fs& f) {
 
                 auto& tree = f.tree_cache.find(rc.first)->second;
                 auto& h = *(btrfs::header*)tree.data();
+
+                {
+                    auto [off, _] = find_chunk(f, h.bytenr);
+
+                    // FIXME - are we safe to use a pointer here instead? Or a std::pair?
+                    f.changed_chunks.emplace(off);
+                }
 
                 if (rc.second.refcount_change < 0) {
                     // remove extent tree item
@@ -837,6 +935,11 @@ static void flush_transaction(fs& f) {
                     update_block_group_used(f, h.bytenr, (int64_t)sb.nodesize);
                 }
             }
+
+            for (auto offset : f.changed_chunks) {
+                changed_chunk(f, offset);
+            }
+            f.changed_chunks.clear();
 
             for (auto offset : f.remove_chunks) {
                 remove_chunk(f, offset);

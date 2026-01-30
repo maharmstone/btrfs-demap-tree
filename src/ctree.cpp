@@ -49,6 +49,7 @@ export struct fs {
     map<uint64_t, chunk_info> chunks;
     map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
     map<uint64_t, ref_change> ref_changes;
+    set<uint64_t> changed_chunks;
     set<uint64_t> remove_chunks;
 };
 
