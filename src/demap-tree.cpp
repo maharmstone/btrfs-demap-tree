@@ -284,15 +284,18 @@ static void remove_from_free_space2(fs& f, path& p, uint64_t start,
     }
 }
 
-static void remove_from_free_space_bitmap(fs& f, path& p, uint64_t start,
-                                          uint64_t len) {
+static void remove_from_free_space_bitmap(fs& f, path& p, uint64_t& start,
+                                          uint64_t& len) {
     auto& sb = f.dev.sb;
     auto sector_size = sb.sectorsize;
     auto key = path_key(p, 0);
     auto s = item_span(p);
 
     uint64_t offset = (start - key.objectid) / sector_size;
-    uint64_t sects = len / sector_size;
+    uint64_t sects = min(len, key.objectid + key.offset - start) / sector_size;
+
+    start += sects * sector_size;
+    len -= sects * sector_size;
 
     s = s.subspan(offset / 8);
     offset %= 8;
@@ -342,58 +345,53 @@ static void remove_from_free_space_bitmap(fs& f, path& p, uint64_t start,
 static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
     auto [addr, gen, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
     path p;
-    btrfs::key key{start, btrfs::key_type::FREE_SPACE_EXTENT, 0};
+    btrfs::key key{start, btrfs::key_type::FREE_SPACE_BITMAP, 0xffffffffffffffff};
 
     find_item2(f, addr, gen, level, key, true,
                btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
-    // FIXME - handle crossing bitmap boundary
-
-    {
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
-        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-
-        if (p.slots[0] < h.nritems) {
-            auto& it = items[p.slots[0]];
-
-            if (it.key.objectid <= start) {
-                switch (it.key.type) {
-                    case btrfs::key_type::FREE_SPACE_EXTENT:
-                        remove_from_free_space2(f, p, start, len);
-                        return;
-
-                    case btrfs::key_type::FREE_SPACE_BITMAP:
-                        remove_from_free_space_bitmap(f, p, start, len);
-                        return;
-
-                    default:
-                        break;
-                }
-            }
-        }
-    }
-
     if (!prev_item(f, p, true))
         throw runtime_error("remove_from_free_space: prev_item failed");
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
-    auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[p.slots[0]];
-
-    if (it.key.objectid <= start) {
-        switch (it.key.type) {
-            case btrfs::key_type::FREE_SPACE_EXTENT:
-                remove_from_free_space2(f, p, start, len);
-                return;
-
-            case btrfs::key_type::FREE_SPACE_BITMAP:
-                remove_from_free_space_bitmap(f, p, start, len);
-                return;
-
-            default:
+    do {
+        if (p.slots[0] == path_nritems(p, 0)) {
+            if (!next_leaf(f, p, true))
                 break;
         }
-    }
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[p.slots[0]];
+
+        // FIXME - add assertion if found extent when expecting bitmap, or vice versa
+
+        bool error = true;
+
+        if (it.key.objectid <= start) {
+            switch (it.key.type) {
+                case btrfs::key_type::FREE_SPACE_EXTENT:
+                    remove_from_free_space2(f, p, start, len);
+                    return;
+
+                case btrfs::key_type::FREE_SPACE_BITMAP:
+                    remove_from_free_space_bitmap(f, p, start, len);
+
+                    if (len == 0)
+                        return;
+
+                    error = false;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        if (error)
+            break;
+
+        p.slots[0]++;
+    } while (true);
 
     throw formatted_error("remove_from_free_space: error carving out {:x},{:x}",
                           start, len);
