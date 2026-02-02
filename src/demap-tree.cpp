@@ -452,10 +452,8 @@ static void add_to_free_space_bitmap(fs& f, path& p, uint64_t start,
     }
 }
 
-static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
+static void add_to_free_space_extents(fs& f, uint64_t start, uint64_t len) {
     // FIXME - throw exception if part of range already free
-
-    // FIXME - crossing bitmap boundaries
 
     {
         auto [addr, gen, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
@@ -502,13 +500,6 @@ static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
         if (prev_item(f, p, true)) {
             auto& it = items[p.slots[0]];
 
-            if (it.key.type == btrfs::key_type::FREE_SPACE_BITMAP &&
-                it.key.objectid <= start &&
-                it.key.objectid + it.key.offset > start) {
-                add_to_free_space_bitmap(f, p, start, len);
-                return;
-            }
-
             if (it.key.type == btrfs::key_type::FREE_SPACE_EXTENT &&
                 it.key.objectid + it.key.offset == start) {
 
@@ -525,6 +516,33 @@ static void add_to_free_space2(fs& f, uint64_t start, uint64_t len) {
     insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
                 { start, btrfs::key_type::FREE_SPACE_EXTENT, len}, 0);
     change_fst_extent_count(f, start, 1);
+}
+
+static void add_to_free_space_bitmaps(fs& f, uint64_t start, uint64_t len) {
+    // FIXME - crossing bitmap boundaries
+
+    {
+        auto [addr, gen, level] = find_tree_addr(f, btrfs::FREE_SPACE_TREE_OBJECTID);
+        path p;
+        btrfs::key key{start, btrfs::key_type::FREE_SPACE_BITMAP, 0xffffffffffffffff};
+
+        find_item2(f, addr, gen, level, key, true,
+                   btrfs::FREE_SPACE_TREE_OBJECTID, p);
+
+        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
+
+        if (prev_item(f, p, true)) {
+            auto& it = items[p.slots[0]];
+
+            if (it.key.type == btrfs::key_type::FREE_SPACE_BITMAP &&
+                it.key.objectid <= start &&
+                it.key.objectid + it.key.offset > start) {
+                add_to_free_space_bitmap(f, p, start, len);
+                return;
+            }
+        }
+    }
 }
 
 static void add_to_free_space_remapped(fs& f, uint64_t start, uint64_t len) {
@@ -544,16 +562,19 @@ static void add_to_free_space_remapped(fs& f, uint64_t start, uint64_t len) {
 }
 
 static void add_to_free_space(fs& f, uint64_t start, uint64_t len) {
-    if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
-        auto& [chunk_start, c] = find_chunk(f, start);
+    auto& [chunk_start, c] = find_chunk(f, start);
 
+    if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
         if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
             add_to_free_space_remapped(f, start, len);
             return;
         }
     }
 
-    add_to_free_space2(f, start, len);
+    if (c.fst_using_bitmaps)
+        add_to_free_space_bitmaps(f, start, len);
+    else
+        add_to_free_space_extents(f, start, len);
 }
 
 static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
