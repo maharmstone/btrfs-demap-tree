@@ -1646,6 +1646,9 @@ static void load_fst_bitmap(fs& f, vector<pair<uint64_t, uint64_t>>& c,
 static void cut_out_superblocks(uint64_t offset, chunk_info& c) {
     static const uint64_t SNIP_LENGTH = 65536;
 
+    if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
+        return;
+
     switch (btrfs::get_chunk_raid_type(c.c)) {
         case btrfs::raid_type::SINGLE:
         case btrfs::raid_type::DUP:
@@ -1671,8 +1674,30 @@ static void cut_out_superblocks(uint64_t offset, chunk_info& c) {
                 uint64_t log_start = phys_start - s.offset + offset;
                 uint64_t len = phys_end - phys_start;
 
-                throw formatted_error("FIXME - cut_out_superblocks ({:x} to {:x}) ({:x}, {:x})\n", phys_start, phys_end, log_start, len);
-                // FIXME
+                for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
+                    auto& e = *it;
+
+                    if (e.first < log_start + len && e.first + e.second > log_start) {
+                        if (log_start > e.first) {
+                            if (log_start + len < e.first + e.second) { // cut out middle
+                                uint64_t new_len = e.first + e.second - log_start - len;
+                                e.second = log_start - e.first;
+
+                                c.fst.emplace_back(log_start + len, new_len);
+                                break;
+                            } else // remove end
+                                e.second = log_start - e.first;
+                        } else {
+                            if (log_start + len < e.first + e.second) { // remove start
+                                uint64_t delta = log_start - e.first;
+
+                                e.first += delta;
+                                e.second -= delta;
+                            } else // remove whole thing
+                                c.fst.erase(it);
+                        }
+                    }
+                }
             }
         }
     }
