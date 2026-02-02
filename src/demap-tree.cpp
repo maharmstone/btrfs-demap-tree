@@ -1643,6 +1643,41 @@ static void load_fst_bitmap(fs& f, vector<pair<uint64_t, uint64_t>>& c,
     }
 }
 
+static void cut_out_superblocks(uint64_t offset, chunk_info& c) {
+    static const uint64_t SNIP_LENGTH = 65536;
+
+    switch (btrfs::get_chunk_raid_type(c.c)) {
+        case btrfs::raid_type::SINGLE:
+        case btrfs::raid_type::DUP:
+        case btrfs::raid_type::RAID1:
+        case btrfs::raid_type::RAID1C3:
+        case btrfs::raid_type::RAID1C4:
+            break;
+
+        // FIXME - RAID0, RAID10, RAID5, RAID6
+
+        default:
+            throw formatted_error("FIXME - cut_out_superblocks: unhandled RAID type {}\n",
+                                  btrfs::get_chunk_raid_type(c.c));
+    }
+
+    for (uint16_t i = 0; i < c.c.num_stripes; i++) {
+        const auto& s = c.c.stripe[i];
+
+        for (auto addr : btrfs::superblock_addrs) {
+            if (s.offset < addr + SNIP_LENGTH && s.offset + c.c.length > addr) {
+                uint64_t phys_start = max(addr, (uint64_t)s.offset);
+                uint64_t phys_end = min(addr + SNIP_LENGTH, s.offset + c.c.length);
+                uint64_t log_start = phys_start - s.offset + offset;
+                uint64_t len = phys_end - phys_start;
+
+                throw formatted_error("FIXME - cut_out_superblocks ({:x} to {:x}) ({:x}, {:x})\n", phys_start, phys_end, log_start, len);
+                // FIXME
+            }
+        }
+    }
+}
+
 static void load_fst(fs& f) {
     struct fst_info {
         vector<pair<uint64_t, uint64_t>> extents;
@@ -1681,8 +1716,6 @@ static void load_fst(fs& f) {
         return true;
     });
 
-    // FIXME - cut out superblocks
-
     // FIXME - merge into two lists, data and metadata?
     // FIXME - order entries by size?
 
@@ -1706,6 +1739,8 @@ static void load_fst(fs& f) {
 
         c.second.fst = move(e.second.extents);
         c.second.fst_using_bitmaps = e.second.using_bitmaps;
+
+        cut_out_superblocks(c.first, c.second);
 
         fst_it++;
     }
