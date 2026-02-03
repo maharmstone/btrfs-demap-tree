@@ -901,7 +901,7 @@ static void changed_chunk(fs& f, uint64_t start) {
     fsi.extent_count = num_ranges;
 }
 
-static void prune_trees2(fs& f, uint64_t addr) {
+static void prune_trees_recurse(fs& f, uint64_t addr) {
     auto& tree = f.tree_cache.find(addr)->second;
     auto& h = *(btrfs::header*)tree.data();
 
@@ -916,7 +916,7 @@ static void prune_trees2(fs& f, uint64_t addr) {
             continue;
 
         if (h.level > 1)
-            prune_trees2(f, it.blockptr);
+            prune_trees_recurse(f, it.blockptr);
 
         auto& tree2 = f.tree_cache.find(it.blockptr)->second;
         auto& h2 = *(btrfs::header*)tree2.data();
@@ -935,6 +935,47 @@ static void prune_trees2(fs& f, uint64_t addr) {
         memmove(&items[i], &items[i + 1], (h.nritems - i - 1) * sizeof(btrfs::key_ptr));
         i--;
         h.nritems--;
+    }
+}
+
+static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
+    prune_trees_recurse(f, addr);
+
+    auto& tree = f.tree_cache.find(addr)->second;
+    auto& h = *(btrfs::header*)tree.data();
+
+    if (h.nritems != 1)
+        return;
+
+    // FIXME - different if root tree or chunk tree
+
+    // FIXME - ROOT_ITEMs can have non-zero offsets?
+
+    // FIXME - multiple levels
+
+    auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+    auto& it = items[0];
+    btrfs::key key{root, btrfs::key_type::ROOT_ITEM, 0};
+    path p;
+
+    {
+        auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
+
+        find_item2(f, addr, gen, level, key, true, btrfs::ROOT_TREE_OBJECTID, p);
+
+        assert(p.slots[0] < path_nritems(p, 0));
+        assert(path_key(p, 0) == key);
+
+        auto sp = item_span(p);
+
+        assert(sp.size() == sizeof(btrfs::root_item));
+
+        auto& ri = *(btrfs::root_item*)sp.data();
+
+        // FIXME - add ref change
+
+        ri.bytenr = it.blockptr;
+        ri.level--;
     }
 }
 
@@ -966,19 +1007,17 @@ static void prune_trees(fs& f) {
             auto& ri = *(btrfs::root_item*)sp.data();
 
             if (ri.generation == sb.generation + 1 && ri.level != 0)
-                prune_trees2(f, ri.bytenr);
+                prune_trees2(f, key.objectid, ri.bytenr);
         }
 
         p.slots[0]++;
     }
 
     if (sb.root_level != 0)
-        prune_trees2(f, sb.root);
+        prune_trees2(f, btrfs::ROOT_TREE_OBJECTID, sb.root);
 
     if (sb.chunk_root_generation == sb.generation + 1 && sb.chunk_root_level != 0)
-        prune_trees2(f, sb.chunk_root);
-
-    // FIXME - change level if necessary
+        prune_trees2(f, btrfs::CHUNK_TREE_OBJECTID, sb.chunk_root);
 }
 
 static void flush_transaction(fs& f) {
