@@ -1091,7 +1091,25 @@ static void delete_internal_node(fs& f, path& p, uint8_t level) {
     // FIXME - do next level as well if necessary
     // FIXME - setting new top level
 
-    if (p.slots[level] > 0)
+    if (p.slots[level] == 0) {
+        auto new_key = items[0].key;
+
+        for (uint8_t i = level + 1; i < btrfs::MAX_LEVEL; i++) {
+            if (p.bufs[i].empty())
+                break;
+
+            const auto& h = *(btrfs::header*)p.bufs[i].data();
+            auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+            auto& it = items[p.slots[i]];
+
+            assert(!(h.flags & btrfs::HEADER_FLAG_WRITTEN));
+
+            it.key = new_key;
+
+            if (p.slots[i] != 0)
+                break;
+        }
+    } else
         p.slots[level]--;
 }
 
