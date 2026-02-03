@@ -976,8 +976,6 @@ static void prune_trees(fs& f) {
     }
 
     // FIXME - change level if necessary
-
-    // FIXME - what about extent tree?
 }
 
 static void flush_transaction(fs& f) {
@@ -986,8 +984,6 @@ static void flush_transaction(fs& f) {
     if (f.ref_changes.empty())
         return;
 
-    prune_trees(f);
-
     {
         auto orig_ref_changes = f.ref_changes;
 
@@ -995,6 +991,8 @@ static void flush_transaction(fs& f) {
             decltype(f.ref_changes) local;
 
             swap(local, f.ref_changes);
+
+            prune_trees(f);
 
             for (auto& rc : local) {
                 if (rc.second.refcount_change == 0)
