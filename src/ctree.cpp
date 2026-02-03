@@ -1067,52 +1067,6 @@ export void add_tree(fs& f, uint64_t num) {
     ri.generation_v2 = ri.generation;
 }
 
-static void delete_internal_node(fs& f, path& p, uint8_t level) {
-    assert(!p.bufs[level].empty());
-
-    auto& h = *(btrfs::header*)p.bufs[level].data();
-    auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[level].data() + sizeof(btrfs::header));
-    auto slot = p.slots[level];
-
-    assert(slot < h.nritems);
-
-    {
-        auto [it2, inserted] = f.ref_changes.emplace(items[slot].blockptr,
-                                                     ref_change{h.owner, -1});
-
-        if (!inserted)
-            it2->second.refcount_change--;
-    }
-
-    memmove(&items[slot], &items[slot + 1],
-            sizeof(btrfs::key_ptr) * (h.nritems - slot - 1));
-    h.nritems--;
-
-    // FIXME - do next level as well if necessary
-    // FIXME - setting new top level
-
-    if (p.slots[level] == 0) {
-        auto new_key = items[0].key;
-
-        for (uint8_t i = level + 1; i < btrfs::MAX_LEVEL; i++) {
-            if (p.bufs[i].empty())
-                break;
-
-            const auto& h = *(btrfs::header*)p.bufs[i].data();
-            auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
-            auto& it = items[p.slots[i]];
-
-            assert(!(h.flags & btrfs::HEADER_FLAG_WRITTEN));
-
-            it.key = new_key;
-
-            if (p.slots[i] != 0)
-                break;
-        }
-    } else
-        p.slots[level]--;
-}
-
 export void delete_item2(fs& f, path& p) {
     auto& sb = f.dev.sb;
     auto& h = *(btrfs::header*)p.bufs[0].data();
@@ -1163,9 +1117,6 @@ export void delete_item2(fs& f, path& p) {
         }
     } else
         p.slots[0]--;
-
-    if (h.nritems == 0)
-        delete_internal_node(f, p, 1);
 
     // FIXME - merging trees?
 }

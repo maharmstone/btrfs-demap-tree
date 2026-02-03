@@ -901,11 +901,92 @@ static void changed_chunk(fs& f, uint64_t start) {
     fsi.extent_count = num_ranges;
 }
 
+static void prune_trees2(fs& f, uint64_t addr) {
+    auto& tree = f.tree_cache.find(addr)->second;
+    auto& h = *(btrfs::header*)tree.data();
+
+    assert(h.level > 0);
+
+    auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+
+    for (size_t i = 0; i < h.nritems; i++) {
+        auto& it = items[i];
+
+        if (items[i].generation != h.generation)
+            continue;
+
+        if (h.level > 1)
+            prune_trees2(f, it.blockptr);
+
+        auto& tree2 = f.tree_cache.find(it.blockptr)->second;
+        auto& h2 = *(btrfs::header*)tree2.data();
+
+        if (h2.nritems != 0)
+            continue;
+
+        {
+            auto [it2, inserted] = f.ref_changes.emplace(it.blockptr,
+                                                         ref_change{h.owner, -1});
+
+            if (!inserted)
+                it2->second.refcount_change--;
+        }
+
+        memmove(&items[i], &items[i + 1], (h.nritems - i - 1) * sizeof(btrfs::key_ptr));
+        i--;
+        h.nritems--;
+    }
+}
+
+static void prune_trees(fs& f) {
+    auto& sb = f.dev.sb;
+
+    // FIXME - handle root tree or chunk tree changing
+
+    path p;
+    auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
+
+    btrfs::key key{0, btrfs::key_type::ROOT_ITEM, 0};
+
+    // FIXME - ignore any internal nodes where generation hasn't changed
+
+    find_item2(f, addr, gen, level, key, true,
+               btrfs::ROOT_TREE_OBJECTID, p);
+
+    while (true) {
+        if (p.slots[0] == path_nritems(p, 0)) {
+            if (!next_leaf(f, p, true))
+                break;
+        }
+
+        auto key = path_key(p, 0);
+
+        if (key.type == btrfs::key_type::ROOT_ITEM) {
+            auto sp = item_span(p);
+
+            assert(sp.size() == sizeof(btrfs::root_item));
+
+            auto& ri = *(btrfs::root_item*)sp.data();
+
+            if (ri.generation == sb.generation + 1 && ri.level != 0)
+                prune_trees2(f, ri.bytenr);
+        }
+
+        p.slots[0]++;
+    }
+
+    // FIXME - change level if necessary
+
+    // FIXME - what about extent tree?
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
     if (f.ref_changes.empty())
         return;
+
+    prune_trees(f);
 
     {
         auto orig_ref_changes = f.ref_changes;
