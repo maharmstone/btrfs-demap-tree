@@ -940,9 +940,6 @@ static void prune_trees2(fs& f, uint64_t addr) {
 
 static void prune_trees(fs& f) {
     auto& sb = f.dev.sb;
-
-    // FIXME - handle root tree or chunk tree changing
-
     path p;
     auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
 
@@ -974,6 +971,12 @@ static void prune_trees(fs& f) {
 
         p.slots[0]++;
     }
+
+    if (sb.root_level != 0)
+        prune_trees2(f, sb.root);
+
+    if (sb.chunk_root_generation == sb.generation + 1 && sb.chunk_root_level != 0)
+        prune_trees2(f, sb.chunk_root);
 
     // FIXME - change level if necessary
 }
