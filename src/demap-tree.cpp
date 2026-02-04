@@ -939,6 +939,8 @@ static void prune_trees_recurse(fs& f, uint64_t addr) {
 }
 
 static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
+    auto& sb = f.dev.sb;
+
     prune_trees_recurse(f, addr);
 
     while (true) {
@@ -948,8 +950,6 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
         if (h.level == 0 || h.nritems != 1)
             break;
 
-        // FIXME - different if root tree or chunk tree
-
         // FIXME - ROOT_ITEMs can have non-zero offsets?
 
         auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
@@ -957,7 +957,13 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
         btrfs::key key{root, btrfs::key_type::ROOT_ITEM, 0};
         path p;
 
-        {
+        if (root == btrfs::ROOT_TREE_OBJECTID) {
+            sb.root = it.blockptr;
+            sb.root_level--;
+        } else if (root == btrfs::CHUNK_TREE_OBJECTID) {
+            sb.chunk_root = it.blockptr;
+            sb.chunk_root_level--;
+        } else {
             auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
 
             find_item2(f, addr, gen, level, key, true,
@@ -972,15 +978,15 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
 
             auto& ri = *(btrfs::root_item*)sp.data();
 
-            {
-                auto [it2, inserted] = f.ref_changes.emplace(h.bytenr,
-                                                             ref_change{root, -1});
-                if (!inserted)
-                    it2->second.refcount_change--;
-            }
-
             ri.bytenr = it.blockptr;
             ri.level--;
+        }
+
+        {
+            auto [it2, inserted] = f.ref_changes.emplace(h.bytenr,
+                                                            ref_change{root, -1});
+            if (!inserted)
+                it2->second.refcount_change--;
         }
 
         addr = it.blockptr;
