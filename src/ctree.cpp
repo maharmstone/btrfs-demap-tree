@@ -35,6 +35,7 @@ export struct chunk_info {
     chunk c;
     vector<pair<uint64_t, uint64_t>> fst;
     bool fst_using_bitmaps = false;
+    map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
 };
 
 export struct ref_change {
@@ -47,7 +48,6 @@ export struct fs {
 
     device dev;
     map<uint64_t, chunk_info> chunks;
-    map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
     map<uint64_t, ref_change> ref_changes;
     set<uint64_t> changed_chunks;
     set<uint64_t> remove_chunks;
@@ -61,6 +61,7 @@ export struct path {
 export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
 export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level);
+export const pair<uint64_t, chunk_info&> find_chunk(fs& f, uint64_t address);
 
 static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
                                  const btrfs::key& k, uint64_t address);
@@ -148,7 +149,8 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
 
     auto new_addr = allocate_metadata(f, orig_h.owner);
 
-    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+    auto& [chunk_start, c] = find_chunk(f, new_addr);
+    auto [it, _] = c.tree_cache.emplace(new_addr, "");
 
     auto& new_tree = it->second;
 
@@ -226,7 +228,8 @@ export void find_item2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
 
     read_metadata(f, addr, gen, level);
 
-    p.bufs[level] = span((uint8_t*)f.tree_cache.find(addr)->second.data(), sb.nodesize);
+    auto& [chunk_start, c] = find_chunk(f, addr);
+    p.bufs[level] = span((uint8_t*)c.tree_cache.find(addr)->second.data(), sb.nodesize);
 
     if (cow)
         cow_tree(f, p, level);
@@ -299,13 +302,13 @@ export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
     return { it.key, item_span(p) };
 }
 
-export const pair<uint64_t, const chunk_info&> find_chunk(fs& f, uint64_t address) {
+export const pair<uint64_t, chunk_info&> find_chunk(fs& f, uint64_t address) {
     auto it = f.chunks.upper_bound(address);
 
     if (it == f.chunks.begin())
         throw formatted_error("could not find address {:x} in chunks", address);
 
-    const auto& p = *prev(it);
+    auto& p = *prev(it);
 
     if (p.first + p.second.c.length <= address)
         throw formatted_error("could not find address {:x} in chunks", address);
@@ -409,7 +412,8 @@ export bool prev_item(fs& f, path& p, bool cow) {
 
             read_metadata(f, it.blockptr, it.generation, h.level - 1);
 
-            p.bufs[h.level - 1] = span((uint8_t*)f.tree_cache.find(it.blockptr)->second.data(),
+            auto& [chunk_start, c] = find_chunk(f, it.blockptr);
+            p.bufs[h.level - 1] = span((uint8_t*)c.tree_cache.find(it.blockptr)->second.data(),
                                        sb.nodesize);
 
             if (cow) {
@@ -454,7 +458,8 @@ export bool next_leaf(fs& f, path& p, bool cow) {
 
             read_metadata(f, it.blockptr, it.generation, h.level - 1);
 
-            p.bufs[h.level - 1] = span((uint8_t*)f.tree_cache.find(it.blockptr)->second.data(),
+            auto& [chunk_start, c] = find_chunk(f, it.blockptr);
+            p.bufs[h.level - 1] = span((uint8_t*)c.tree_cache.find(it.blockptr)->second.data(),
                                        sb.nodesize);
 
             if (cow) {
@@ -552,15 +557,14 @@ export uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap) {
 
 export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
     auto& sb = f.dev.sb;
+    auto& [chunk_start, c] = find_chunk(f, addr);
 
-    if (f.tree_cache.contains(addr))
+    if (c.tree_cache.contains(addr))
         return;
 
     uint64_t read_addr = addr;
 
     if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
-        auto& [chunk_start, c] = find_chunk(f, addr);
-
         if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
             uint64_t left_in_remap;
 
@@ -588,7 +592,7 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
     if (h.generation != gen)
         throw formatted_error("{:x}: generation mismatch: expected {:x}, got {:x}", addr, gen, h.generation);
 
-    f.tree_cache.emplace(make_pair(addr, tree));
+    c.tree_cache.emplace(make_pair(addr, tree));
 }
 
 export void walk_tree2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
@@ -596,7 +600,9 @@ export void walk_tree2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
                        optional<btrfs::key> from) {
     read_metadata(f, addr, gen, level);
 
-    auto& tree = f.tree_cache.find(addr)->second;
+    auto& [chunk_start, c] = find_chunk(f, addr);
+    auto& tree = c.tree_cache.find(addr)->second;
+
     const auto& h = *(btrfs::header*)tree.data();
 
     if (h.level == 0) {
@@ -646,8 +652,9 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
     btrfs::key first_key;
 
     auto new_addr = allocate_metadata(f, tree);
+    auto& [chunk_start, c] = find_chunk(f, new_addr);
 
-    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+    auto [it, _] = c.tree_cache.emplace(new_addr, "");
 
     auto& new_tree = it->second;
 
@@ -730,8 +737,9 @@ static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
     assert(level < btrfs::MAX_LEVEL - 2);
 
     auto new_addr = allocate_metadata(f, tree);
+    auto& [chunk_start, c] = find_chunk(f, new_addr);
 
-    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+    auto [it, _] = c.tree_cache.emplace(new_addr, "");
 
     auto& new_tree = it->second;
 
@@ -810,7 +818,8 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
             to_copy += items[i].size;
     }
 
-    auto [it, _] = f.tree_cache.emplace(new_addr, "");
+    auto& [chunk_start, c] = find_chunk(f, new_addr);
+    auto [it, _] = c.tree_cache.emplace(new_addr, "");
 
     auto& new_tree = it->second;
 
@@ -1027,7 +1036,8 @@ export void add_tree(fs& f, uint64_t num) {
 
     auto addr = allocate_metadata(f, num);
 
-    auto [it, _] = f.tree_cache.emplace(addr, "");
+    auto& [chunk_start, c] = find_chunk(f, addr);
+    auto [it, _] = c.tree_cache.emplace(addr, "");
 
     auto& new_tree = it->second;
 

@@ -902,7 +902,8 @@ static void changed_chunk(fs& f, uint64_t start) {
 }
 
 static void prune_trees_recurse(fs& f, uint64_t addr) {
-    auto& tree = f.tree_cache.find(addr)->second;
+    auto& [chunk_start, c] = find_chunk(f, addr);
+    auto& tree = c.tree_cache.find(addr)->second;
     auto& h = *(btrfs::header*)tree.data();
 
     assert(h.level > 0);
@@ -918,7 +919,8 @@ static void prune_trees_recurse(fs& f, uint64_t addr) {
         if (h.level > 1)
             prune_trees_recurse(f, it.blockptr);
 
-        auto& tree2 = f.tree_cache.find(it.blockptr)->second;
+        auto& [chunk_start2, c2] = find_chunk(f, it.blockptr);
+        auto& tree2 = c2.tree_cache.find(it.blockptr)->second;
         auto& h2 = *(btrfs::header*)tree2.data();
 
         if (h2.nritems != 0)
@@ -944,7 +946,8 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
     prune_trees_recurse(f, addr);
 
     while (true) {
-        auto& tree = f.tree_cache.find(addr)->second;
+        auto& [chunk_start, c] = find_chunk(f, addr);
+        auto& tree = c.tree_cache.find(addr)->second;
         auto& h = *(btrfs::header*)tree.data();
 
         if (h.level == 0 || h.nritems != 1)
@@ -1054,7 +1057,8 @@ static void flush_transaction(fs& f) {
                 if (rc.second.refcount_change == 0)
                     continue;
 
-                auto& tree = f.tree_cache.find(rc.first)->second;
+                auto& [chunk_start, c] = find_chunk(f, rc.first);
+                auto& tree = c.tree_cache.find(rc.first)->second;
                 auto& h = *(btrfs::header*)tree.data();
 
                 {
@@ -1135,7 +1139,8 @@ static void flush_transaction(fs& f) {
             if (rc.second.refcount_change < 0)
                 continue;
 
-            auto& tree = f.tree_cache.find(rc.first)->second;
+            auto& [chunk_start, c] = find_chunk(f, rc.first);
+            auto& tree = c.tree_cache.find(rc.first)->second;
             auto& h = *(btrfs::header*)tree.data();
 
             if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
