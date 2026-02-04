@@ -1484,11 +1484,12 @@ static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length,
         length = MAX_COPY;
 
     // FIXME - avoiding superblock
+    // FIXME - what if there's a csum error - tough luck?
 
-    auto buf = read_data(f, dst_addr, length);
+    auto& [chunk_start, c] = find_chunk(f, dst_addr);
+    auto buf = span((uint8_t*)c.maps[0] + dst_addr - chunk_start, length);
 
-    // FIXME - don't mix and match char and uint8_t
-    write_data(f, src_addr, span((uint8_t*)buf.data(), buf.size()));
+    write_data(f, src_addr, buf);
 
     remove_from_remap_tree(f, src_addr, length);
     add_identity_remap(f, src_addr, length);

@@ -335,46 +335,6 @@ export const pair<uint64_t, chunk_info&> find_chunk(fs& f, uint64_t address) {
     return p;
 }
 
-export string read_data(fs& f, uint64_t addr, uint64_t size) {
-    auto& [chunk_start, c] = find_chunk(f, addr);
-
-    assert(c.c.num_stripes > 0);
-
-    string ret;
-
-    ret.resize(size);
-
-    // FIXME - handle degraded reads?
-    // FIXME - handle csum failures (get other stripe)
-
-    switch (btrfs::get_chunk_raid_type(c.c)) {
-        // FIXME - RAID5, RAID6, RAID10, RAID0
-
-        case btrfs::raid_type::SINGLE:
-        case btrfs::raid_type::DUP:
-        case btrfs::raid_type::RAID1:
-        case btrfs::raid_type::RAID1C3:
-        case btrfs::raid_type::RAID1C4: {
-            if (f.dev.sb.dev_item.devid != c.c.stripe[0].devid)
-                throw formatted_error("device {} not found", c.c.stripe[0].devid);
-
-            if (lseek(f.dev.fd, c.c.stripe[0].offset + addr - chunk_start, SEEK_SET) == -1)
-                throw formatted_error("lseek failed (errno {})", errno);
-
-            if (read(f.dev.fd, ret.data(), size) != (ssize_t)size)
-                throw formatted_error("read failed (errno {})", errno);
-
-            break;
-        }
-
-        default:
-            throw formatted_error("unhandled RAID type {}\n",
-                                  btrfs::get_chunk_raid_type(c.c));
-    }
-
-    return ret;
-}
-
 export uint32_t path_nritems(const path& p, uint8_t level) {
     const auto& h = *(btrfs::header*)p.bufs[level].data();
 
