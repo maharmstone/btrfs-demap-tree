@@ -975,8 +975,7 @@ static void flush_transaction(fs& f) {
                     continue;
 
                 auto& [chunk_start, c] = find_chunk(f, rc.first);
-                auto& tree = c.tree_cache.find(rc.first)->second;
-                auto& h = *(btrfs::header*)tree.data();
+                auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + rc.first - chunk_start);
 
                 {
                     auto [off, _] = find_chunk(f, h.bytenr);
@@ -1057,8 +1056,7 @@ static void flush_transaction(fs& f) {
                 continue;
 
             auto& [chunk_start, c] = find_chunk(f, rc.first);
-            auto& tree = c.tree_cache.find(rc.first)->second;
-            auto& h = *(btrfs::header*)tree.data();
+            auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + rc.first - chunk_start);
 
             if (h.flags & btrfs::HEADER_FLAG_WRITTEN)
                 continue;
@@ -1067,11 +1065,13 @@ static void flush_transaction(fs& f) {
 
             calc_tree_csum(h, sb);
 
-            write_data(f, h.bytenr, span((uint8_t*)tree.data(), sb.nodesize));
+            write_data(f, h.bytenr, span((uint8_t*)&h, sb.nodesize));
         }
     }
 
     sb.generation++;
+
+    // FIXME - sync
 
     write_superblocks(f);
 

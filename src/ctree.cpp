@@ -54,7 +54,7 @@ export struct chunk_info {
     vector<pair<uint64_t, uint64_t>> fst;
     bool fst_using_bitmaps = false;
     array<void*, MAX_STRIPES> maps{};
-    map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
+    set<uint64_t> metadata_checked;
 };
 
 export struct ref_change {
@@ -169,14 +169,11 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     auto new_addr = allocate_metadata(f, orig_h.owner);
 
     auto& [chunk_start, c] = find_chunk(f, new_addr);
-    auto [it, _] = c.tree_cache.emplace(new_addr, "");
+    auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
 
-    auto& new_tree = it->second;
+    memcpy(&h, p.bufs[level].data(), sb.nodesize);
 
-    new_tree.resize(sb.nodesize);
-    memcpy(new_tree.data(), p.bufs[level].data(), sb.nodesize);
-
-    auto& h = *(btrfs::header*)new_tree.data();
+    c.metadata_checked.insert(new_addr);
 
     h.bytenr = new_addr;
     h.generation = sb.generation + 1;
@@ -235,7 +232,8 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     // FIXME - mark old tree as going away (delayed ref)
     // FIXME - what if COWing snapshotted tree?
 
-    p.bufs[level] = span((uint8_t*)new_tree.data(), sb.nodesize);
+    p.bufs[level] = span((uint8_t*)c.maps[0] + new_addr - chunk_start,
+                         sb.nodesize);
 }
 
 export void find_item2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
@@ -248,7 +246,7 @@ export void find_item2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
     read_metadata(f, addr, gen, level);
 
     auto& [chunk_start, c] = find_chunk(f, addr);
-    p.bufs[level] = span((uint8_t*)c.tree_cache.find(addr)->second.data(), sb.nodesize);
+    p.bufs[level] = span((uint8_t*)c.maps[0] + addr - chunk_start, sb.nodesize);
 
     if (cow)
         cow_tree(f, p, level);
@@ -395,7 +393,7 @@ export bool prev_item(fs& f, path& p, bool cow) {
             read_metadata(f, it.blockptr, it.generation, h.level - 1);
 
             auto& [chunk_start, c] = find_chunk(f, it.blockptr);
-            p.bufs[h.level - 1] = span((uint8_t*)c.tree_cache.find(it.blockptr)->second.data(),
+            p.bufs[h.level - 1] = span((uint8_t*)c.maps[0] + it.blockptr - chunk_start,
                                        sb.nodesize);
 
             if (cow) {
@@ -441,7 +439,7 @@ export bool next_leaf(fs& f, path& p, bool cow) {
             read_metadata(f, it.blockptr, it.generation, h.level - 1);
 
             auto& [chunk_start, c] = find_chunk(f, it.blockptr);
-            p.bufs[h.level - 1] = span((uint8_t*)c.tree_cache.find(it.blockptr)->second.data(),
+            p.bufs[h.level - 1] = span((uint8_t*)c.maps[0] + it.blockptr - chunk_start,
                                        sb.nodesize);
 
             if (cow) {
@@ -541,7 +539,7 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
     auto& sb = f.dev.sb;
     auto& [chunk_start, c] = find_chunk(f, addr);
 
-    if (c.tree_cache.contains(addr))
+    if (c.metadata_checked.contains(addr))
         return;
 
     uint64_t read_addr = addr;
@@ -576,7 +574,7 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
     if (h.generation != gen)
         throw formatted_error("{:x}: generation mismatch: expected {:x}, got {:x}", addr, gen, h.generation);
 
-    c.tree_cache.emplace(make_pair(addr, tree));
+    c.metadata_checked.insert(addr);
 }
 
 export void walk_tree2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
@@ -585,9 +583,8 @@ export void walk_tree2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
     read_metadata(f, addr, gen, level);
 
     auto& [chunk_start, c] = find_chunk(f, addr);
-    auto& tree = c.tree_cache.find(addr)->second;
 
-    const auto& h = *(btrfs::header*)tree.data();
+    const auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + addr - chunk_start);
 
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
@@ -596,7 +593,7 @@ export void walk_tree2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
             if (from.has_value() && it.key < *from)
                 continue;
 
-            auto item = span((uint8_t*)tree.data() + sizeof(btrfs::header) + it.offset, it.size);
+            auto item = span((uint8_t*)&h + sizeof(btrfs::header) + it.offset, it.size);
 
             if (!func(it.key, item))
                 break;
@@ -638,13 +635,12 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
     auto new_addr = allocate_metadata(f, tree);
     auto& [chunk_start, c] = find_chunk(f, new_addr);
 
-    auto [it, _] = c.tree_cache.emplace(new_addr, "");
+    auto& th2 = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
+    memcpy(&th2, p.bufs[level - 1].data(), sizeof(btrfs::header));
+    memset((uint8_t*)&th2 + sizeof(btrfs::header), 0,
+           sb.nodesize - sizeof(btrfs::header));
 
-    auto& new_tree = it->second;
-
-    new_tree.resize(sb.nodesize);
-
-    memcpy(new_tree.data(), p.bufs[level - 1].data(), sizeof(btrfs::header));
+    c.metadata_checked.insert(new_addr);
 
     auto& th = *(btrfs::header*)p.bufs[level - 1].data();
 
@@ -658,7 +654,6 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
         first_key = items[0].key;
     }
 
-    auto& th2 = *(btrfs::header*)new_tree.data();
     th2.bytenr = new_addr;
     th2.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
     th2.level = level;
@@ -674,7 +669,7 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
 
     memset(&items2[1], 0, sb.nodesize - sizeof(btrfs::header) - sizeof(btrfs::key_ptr));
 
-    p.bufs[level] = span((uint8_t*)new_tree.data(), sb.nodesize);
+    p.bufs[level] = span((uint8_t*)&th2, sb.nodesize);
     p.slots[level] = 0;
 
     if (th2.owner == btrfs::CHUNK_TREE_OBJECTID) {
@@ -723,15 +718,14 @@ static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
     auto new_addr = allocate_metadata(f, tree);
     auto& [chunk_start, c] = find_chunk(f, new_addr);
 
-    auto [it, _] = c.tree_cache.emplace(new_addr, "");
-
-    auto& new_tree = it->second;
-
-    new_tree.resize(sb.nodesize);
-
-    auto& th2 = *(btrfs::header*)new_tree.data();
+    auto& th2 = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
 
     memcpy(&th2, &th, sizeof(btrfs::header));
+    memset((uint8_t*)&th2 + sizeof(btrfs::header), 0,
+           sb.nodesize - sizeof(btrfs::header));
+
+    c.metadata_checked.insert(new_addr);
+
     th2.bytenr = new_addr;
     th2.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
     th2.nritems = th.nritems - split_point;
@@ -755,7 +749,7 @@ static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
         p.slots[level + 1]--;
     else {
         p.slots[level] -= split_point;
-        p.bufs[level] = span((uint8_t*)new_tree.data(), sb.nodesize);
+        p.bufs[level] = span((uint8_t*)&th2, sb.nodesize);
     }
 }
 
@@ -803,14 +797,14 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
     }
 
     auto& [chunk_start, c] = find_chunk(f, new_addr);
-    auto [it, _] = c.tree_cache.emplace(new_addr, "");
 
-    auto& new_tree = it->second;
+    auto& th2 = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
+    memcpy(&th2, p.bufs[0].data(), sizeof(btrfs::header));
+    memset((uint8_t*)&th2 + sizeof(btrfs::header), 0,
+           sb.nodesize - sizeof(btrfs::header));
 
-    new_tree.resize(sb.nodesize);
-    memcpy(new_tree.data(), p.bufs[0].data(), sizeof(btrfs::header));
+    c.metadata_checked.insert(new_addr);
 
-    auto& th2 = *(btrfs::header*)new_tree.data();
     th2.bytenr = new_addr;
     th2.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
     th2.nritems = th.nritems - split_point;
@@ -820,7 +814,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
     memcpy(items2, &items[split_point], sizeof(btrfs::item) * (th.nritems - split_point));
 
     // move trailing entries to new tree
-    memcpy(new_tree.data() + sb.nodesize - to_copy,
+    memcpy((uint8_t*)&th2 + sb.nodesize - to_copy,
            p.bufs[0].data() + sb.nodesize - total_data, to_copy);
 
     for (unsigned int i = 0; i < th2.nritems; i++) {
@@ -829,7 +823,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
 
     th.nritems = split_point;
 
-    memset(new_tree.data() + sizeof(btrfs::header) + (th2.nritems * sizeof(btrfs::item)),
+    memset((uint8_t*)&th2 + sizeof(btrfs::header) + (th2.nritems * sizeof(btrfs::item)),
            0, sb.nodesize - to_copy - sizeof(btrfs::header) - (th2.nritems * sizeof(btrfs::item)));
 
     f.ref_changes.emplace(new_addr, ref_change{th.owner, 1});
@@ -844,7 +838,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
         p.slots[1]--;
     else {
         p.slots[0] -= split_point;
-        p.bufs[0] = span((uint8_t*)new_tree.data(), sb.nodesize);
+        p.bufs[0] = span((uint8_t*)&th2, sb.nodesize);
     }
 }
 
@@ -1021,13 +1015,11 @@ export void add_tree(fs& f, uint64_t num) {
     auto addr = allocate_metadata(f, num);
 
     auto& [chunk_start, c] = find_chunk(f, addr);
-    auto [it, _] = c.tree_cache.emplace(addr, "");
 
-    auto& new_tree = it->second;
+    auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + addr - chunk_start);
+    memset(&h, 0, sb.nodesize);
 
-    new_tree.resize(sb.nodesize); // zero-initializes
-
-    auto& h = *(btrfs::header*)new_tree.data();
+    c.metadata_checked.insert(addr);
 
     h.fsid = sb.fsid;
     h.bytenr = addr;
@@ -1264,8 +1256,7 @@ export void change_key(path& p, const btrfs::key& key) {
 
 static void prune_trees_recurse(fs& f, uint64_t addr) {
     auto& [chunk_start, c] = find_chunk(f, addr);
-    auto& tree = c.tree_cache.find(addr)->second;
-    auto& h = *(btrfs::header*)tree.data();
+    auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + addr - chunk_start);
 
     assert(h.level > 0);
 
@@ -1281,8 +1272,7 @@ static void prune_trees_recurse(fs& f, uint64_t addr) {
             prune_trees_recurse(f, it.blockptr);
 
         auto& [chunk_start2, c2] = find_chunk(f, it.blockptr);
-        auto& tree2 = c2.tree_cache.find(it.blockptr)->second;
-        auto& h2 = *(btrfs::header*)tree2.data();
+        auto& h2 = *(btrfs::header*)((uint8_t*)c2.maps[0] + it.blockptr - chunk_start2);
 
         if (h2.nritems != 0)
             continue;
@@ -1308,8 +1298,7 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
 
     while (true) {
         auto& [chunk_start, c] = find_chunk(f, addr);
-        auto& tree = c.tree_cache.find(addr)->second;
-        auto& h = *(btrfs::header*)tree.data();
+        auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + addr - chunk_start);
 
         if (h.level == 0 || h.nritems != 1)
             break;
