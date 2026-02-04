@@ -954,6 +954,14 @@ static void changed_chunk(fs& f, uint64_t start) {
     fsi.extent_count = num_ranges;
 }
 
+static void flush_chunk(fs& f, uint64_t offset, bool sync) {
+    auto& [chunk_start, c] = find_chunk(f, offset);
+
+    for (uint16_t i = 0; i < c.c.num_stripes; i++) {
+        msync(c.maps[i], c.c.length, sync ? MS_SYNC : MS_ASYNC);
+    }
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
@@ -1046,6 +1054,8 @@ static void flush_transaction(fs& f) {
         swap(f.ref_changes, orig_ref_changes);
     }
 
+    set<uint64_t> written_chunks;
+
     while (!f.ref_changes.empty()) {
         decltype(f.ref_changes) local;
 
@@ -1065,15 +1075,28 @@ static void flush_transaction(fs& f) {
 
             calc_tree_csum(h, sb);
 
-            write_data(f, h.bytenr, span((uint8_t*)&h, sb.nodesize));
+            for (uint16_t i = 1; i < c.c.num_stripes; i++) {
+                memcpy((uint8_t*)c.maps[i] + rc.first - chunk_start,
+                       &h, sb.nodesize);
+            }
+
+            written_chunks.insert(chunk_start);
+        }
+    }
+
+    // sync
+
+    for (unsigned int i = 0; i < 2; i++) {
+        for (auto chunk_start : written_chunks) {
+            flush_chunk(f, chunk_start, i == 1);
         }
     }
 
     sb.generation++;
 
-    // FIXME - sync
-
     write_superblocks(f);
+
+    // FIXME - sync after write_superblocks
 
     // FIXME - unmark new metadata
     // FIXME - free old metadata
