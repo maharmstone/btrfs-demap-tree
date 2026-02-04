@@ -595,11 +595,13 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
         }
     }
 
-    auto tree = read_data(f, read_addr, sb.nodesize);
+    string tree;
+
+    tree.assign((char*)c.maps[0] + read_addr - chunk_start, sb.nodesize);
 
     const auto& h = *(btrfs::header*)tree.data();
 
-    // FIXME - use other chunk stripe if verification fails
+    // FIXME - use other chunk stripe if verification fails (and write back good version)
 
     // FIXME - print values
     if (!check_tree_csum(h, sb))
