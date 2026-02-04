@@ -8,6 +8,7 @@
 #include <getopt.h>
 #include <string.h>
 #include <assert.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include "config.h"
 
@@ -66,7 +67,29 @@ static void load_sys_chunks(fs& f) {
 
         sys_array = sys_array.subspan(offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)));
 
-        f.chunks.insert(make_pair((uint64_t)k.offset, c));
+        auto [it, inserted] = f.chunks.insert(make_pair((uint64_t)k.offset, c));
+
+        switch (btrfs::get_chunk_raid_type(c)) {
+            case btrfs::raid_type::SINGLE:
+            case btrfs::raid_type::DUP:
+            case btrfs::raid_type::RAID1:
+            case btrfs::raid_type::RAID1C3:
+            case btrfs::raid_type::RAID1C4:
+                break;
+
+            default:
+                throw formatted_error("unhandled RAID type {}\n",
+                                      btrfs::get_chunk_raid_type(c));
+        }
+
+        for (uint16_t i = 0; i < c.num_stripes; i++) {
+            auto ret = mmap(nullptr, c.length, PROT_READ | PROT_WRITE,
+                            MAP_SHARED, f.dev.fd, c.stripe[i].offset);
+            if (ret == MAP_FAILED)
+                throw formatted_error("mmap failed (errno {})", errno);
+
+            it->second.maps[i] = ret;
+        }
     }
 }
 

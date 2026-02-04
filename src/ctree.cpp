@@ -11,6 +11,7 @@ module;
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
 
 export module ctree;
 
@@ -43,9 +44,16 @@ export struct chunk : btrfs::chunk {
 };
 
 export struct chunk_info {
+    ~chunk_info() {
+        for (auto m : maps) {
+            munmap(m, c.length);
+        }
+    }
+
     chunk c;
     vector<pair<uint64_t, uint64_t>> fst;
     bool fst_using_bitmaps = false;
+    array<void*, MAX_STRIPES> maps{};
     map<uint64_t, string> tree_cache; // FIXME - basic_string<uint8_t> or vector<uint8_t> instead?
 };
 
