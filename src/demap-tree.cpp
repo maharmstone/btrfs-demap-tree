@@ -8,6 +8,7 @@
 #include <getopt.h>
 #include <string.h>
 #include <assert.h>
+#include <unistd.h>
 #include "config.h"
 
 import cxxbtrfs;
@@ -21,8 +22,11 @@ static const size_t SZ_1M = 0x100000;
 static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length);
 
 static void read_superblock(device& d) {
-    d.f.seekg(btrfs::superblock_addrs[0]);
-    d.f.read((char*)&d.sb, sizeof(d.sb));
+    if (lseek(d.fd, btrfs::superblock_addrs[0], SEEK_SET) == -1)
+        throw formatted_error("lseek failed (errno {})", errno);
+
+    if (read(d.fd, (char*)&d.sb, sizeof(d.sb)) != (ssize_t)sizeof(d.sb))
+        throw formatted_error("read failed (errno {})", errno);
 
     if (d.sb.magic != btrfs::MAGIC)
         throw runtime_error("not btrfs");
@@ -164,8 +168,11 @@ static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
                 if (f.dev.sb.dev_item.devid != s.devid)
                     throw formatted_error("device {} not found", s.devid);
 
-                f.dev.f.seekg(s.offset + addr - chunk_start);
-                f.dev.f.write((char*)data.data(), data.size());
+                if (lseek(f.dev.fd, s.offset + addr - chunk_start, SEEK_SET) == -1)
+                    throw formatted_error("lseek failed (errno {})", errno);
+
+                if (write(f.dev.fd, (char*)data.data(), data.size()) != (ssize_t)data.size())
+                    throw formatted_error("write failed (errno {})", errno);
             }
 
             break;
@@ -220,13 +227,15 @@ static void write_superblocks(fs& f) {
         if (a + sizeof(d.sb) > f.dev.sb.dev_item.total_bytes)
             break;
 
-        d.f.seekg(a);
+        if (lseek(f.dev.fd, a, SEEK_SET) == -1)
+            throw formatted_error("lseek failed (errno {})", errno);
 
         d.sb.bytenr = a;
 
         btrfs::calc_superblock_csum(d.sb);
 
-        d.f.write((char*)&d.sb, sizeof(d.sb));
+        if (write(f.dev.fd, (char*)&d.sb, sizeof(d.sb)) != (ssize_t)sizeof(d.sb))
+            throw formatted_error("write failed (errno {})", errno);
     }
 
     fill_in_superblock_backup(f);
@@ -1844,9 +1853,6 @@ static void add_data_reloc_tree(fs& f) {
 
 static void demap(const filesystem::path& fn) {
     fs f(fn);
-
-    if (f.dev.f.fail())
-        throw formatted_error("Failed to open {}", fn.string()); // FIXME - include why
 
     read_superblock(f.dev);
 

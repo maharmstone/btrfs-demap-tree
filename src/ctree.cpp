@@ -3,13 +3,14 @@ module;
 #include <span>
 #include <optional>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <set>
 #include <functional>
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 export module ctree;
 
@@ -21,9 +22,19 @@ using namespace std;
 export const size_t MAX_STRIPES = 16;
 
 export struct device {
-    device(const filesystem::path& fn) : f(fn) { }
+    device(const filesystem::path& fn) {
+        if (auto ret = open(fn.string().c_str(), O_RDWR); ret == -1)
+            throw formatted_error("open failed (errno {})", errno);
+        else
+            fd = ret;
+    }
 
-    fstream f;
+    ~device() {
+        if (fd != 0)
+            close(fd);
+    }
+
+    int fd = 0;
     btrfs::super_block sb;
 };
 
@@ -339,8 +350,11 @@ export string read_data(fs& f, uint64_t addr, uint64_t size) {
             if (f.dev.sb.dev_item.devid != c.c.stripe[0].devid)
                 throw formatted_error("device {} not found", c.c.stripe[0].devid);
 
-            f.dev.f.seekg(c.c.stripe[0].offset + addr - chunk_start);
-            f.dev.f.read(ret.data(), size);
+            if (lseek(f.dev.fd, c.c.stripe[0].offset + addr - chunk_start, SEEK_SET) == -1)
+                throw formatted_error("lseek failed (errno {})", errno);
+
+            if (read(f.dev.fd, ret.data(), size) != (ssize_t)size)
+                throw formatted_error("read failed (errno {})", errno);
 
             break;
         }
