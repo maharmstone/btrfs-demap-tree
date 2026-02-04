@@ -972,7 +972,12 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
 
         auto& ri = *(btrfs::root_item*)sp.data();
 
-        // FIXME - add ref change
+        {
+            auto [it2, inserted] = f.ref_changes.emplace(h.bytenr,
+                                                         ref_change{root, -1});
+            if (!inserted)
+                it2->second.refcount_change--;
+        }
 
         ri.bytenr = it.blockptr;
         ri.level--;
