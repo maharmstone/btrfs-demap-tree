@@ -941,46 +941,49 @@ static void prune_trees_recurse(fs& f, uint64_t addr) {
 static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
     prune_trees_recurse(f, addr);
 
-    auto& tree = f.tree_cache.find(addr)->second;
-    auto& h = *(btrfs::header*)tree.data();
+    while (true) {
+        auto& tree = f.tree_cache.find(addr)->second;
+        auto& h = *(btrfs::header*)tree.data();
 
-    if (h.nritems != 1)
-        return;
+        if (h.level == 0 || h.nritems != 1)
+            break;
 
-    // FIXME - different if root tree or chunk tree
+        // FIXME - different if root tree or chunk tree
 
-    // FIXME - ROOT_ITEMs can have non-zero offsets?
+        // FIXME - ROOT_ITEMs can have non-zero offsets?
 
-    // FIXME - multiple levels
-
-    auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
-    auto& it = items[0];
-    btrfs::key key{root, btrfs::key_type::ROOT_ITEM, 0};
-    path p;
-
-    {
-        auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
-
-        find_item2(f, addr, gen, level, key, true, btrfs::ROOT_TREE_OBJECTID, p);
-
-        assert(p.slots[0] < path_nritems(p, 0));
-        assert(path_key(p, 0) == key);
-
-        auto sp = item_span(p);
-
-        assert(sp.size() == sizeof(btrfs::root_item));
-
-        auto& ri = *(btrfs::root_item*)sp.data();
+        auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
+        auto& it = items[0];
+        btrfs::key key{root, btrfs::key_type::ROOT_ITEM, 0};
+        path p;
 
         {
-            auto [it2, inserted] = f.ref_changes.emplace(h.bytenr,
-                                                         ref_change{root, -1});
-            if (!inserted)
-                it2->second.refcount_change--;
+            auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
+
+            find_item2(f, addr, gen, level, key, true,
+                       btrfs::ROOT_TREE_OBJECTID, p);
+
+            assert(p.slots[0] < path_nritems(p, 0));
+            assert(path_key(p, 0) == key);
+
+            auto sp = item_span(p);
+
+            assert(sp.size() == sizeof(btrfs::root_item));
+
+            auto& ri = *(btrfs::root_item*)sp.data();
+
+            {
+                auto [it2, inserted] = f.ref_changes.emplace(h.bytenr,
+                                                             ref_change{root, -1});
+                if (!inserted)
+                    it2->second.refcount_change--;
+            }
+
+            ri.bytenr = it.blockptr;
+            ri.level--;
         }
 
-        ri.bytenr = it.blockptr;
-        ri.level--;
+        addr = it.blockptr;
     }
 }
 
