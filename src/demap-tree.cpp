@@ -23,11 +23,9 @@ static const size_t SZ_1M = 0x100000;
 static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length);
 
 static void read_superblock(device& d) {
-    if (lseek(d.fd, btrfs::superblock_addrs[0], SEEK_SET) == -1)
-        throw formatted_error("lseek failed (errno {})", errno);
+    // FIXME - loop through and choose valid superblock with highest generation?
 
-    if (read(d.fd, (char*)&d.sb, sizeof(d.sb)) != (ssize_t)sizeof(d.sb))
-        throw formatted_error("read failed (errno {})", errno);
+    memcpy(&d.sb, d.mmap_sb[0], sizeof(btrfs::super_block));
 
     if (d.sb.magic != btrfs::MAGIC)
         throw runtime_error("not btrfs");
