@@ -274,6 +274,11 @@ static void write_superblocks(fs& f) {
         btrfs::calc_superblock_csum(d.sb);
 
         memcpy(f.dev.mmap_sb[i], &d.sb, sizeof(d.sb));
+        msync(f.dev.mmap_sb[i], sizeof(d.sb), MS_ASYNC);
+    }
+
+    for (size_t i = 0; i < btrfs::superblock_addrs.size(); i++) {
+        msync(f.dev.mmap_sb[i], sizeof(d.sb), MS_SYNC);
     }
 
     fill_in_superblock_backup(f);
@@ -1089,8 +1094,6 @@ static void flush_transaction(fs& f) {
     sb.generation++;
 
     write_superblocks(f);
-
-    // FIXME - sync after write_superblocks
 
     // FIXME - unmark new metadata
     // FIXME - free old metadata
