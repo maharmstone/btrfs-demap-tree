@@ -1032,6 +1032,8 @@ static void flush_transaction(fs& f) {
                 }
             }
 
+            prune_trees(f);
+
             for (auto offset : f.changed_chunks) {
                 changed_chunk(f, offset);
             }
