@@ -1314,8 +1314,6 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
     uint64_t dest_addr;
     bool identity_remap;
 
-    // FIXME - identity remaps
-
     // do remap
 
     {
