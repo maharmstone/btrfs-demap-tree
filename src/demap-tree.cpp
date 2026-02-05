@@ -616,7 +616,8 @@ static void add_to_free_space_remapped(fs& f, uint64_t start, uint64_t len) {
     while (true) {
         uint64_t left_in_remap;
 
-        auto dest_addr = translate_remap(f, start, left_in_remap);
+        // we don't care about the return value, we're only interested in left_in_remap
+        translate_remap(f, start, left_in_remap);
 
         remove_from_remap_tree(f, start, min(len, left_in_remap));
 
