@@ -1309,8 +1309,6 @@ static void update_block_group_remap_bytes(fs& f, uint64_t address, int64_t delt
 }
 
 static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
-    print("remove_from_remap_tree: {:x}, {:x}\n", src_addr, length);
-
     btrfs::key found_key;
     uint64_t dest_addr;
     bool identity_remap;
@@ -1496,8 +1494,6 @@ static uint64_t process_remap(fs& f, uint64_t src_addr, uint64_t length,
                               uint64_t dst_addr) {
     static const uint64_t MAX_COPY = SZ_1M; // FIXME - make option?
 
-    print("process_remap: {:x}, {:x}, {:x}\n", src_addr, length, dst_addr);
-
     // FIXME - if metadata, don't split nodes
     // FIXME - compressed extents need to be contiguous(?)
 
@@ -1672,8 +1668,6 @@ static void finish_off_bg(fs& f, uint64_t offset, uint64_t length) {
 }
 
 static void demap_bg(fs& f, uint64_t offset) {
-    print("FIXME - demap_bg {:x}\n", offset); // FIXME
-
     auto& [_, c] = find_chunk(f, offset);
 
     if (c.c.num_stripes == 0)
