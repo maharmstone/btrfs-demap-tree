@@ -115,7 +115,7 @@ export struct fs {
 };
 
 export struct path {
-    array<span<uint8_t>, btrfs::MAX_LEVEL> bufs;
+    array<uint8_t*, btrfs::MAX_LEVEL> bufs{};
     array<uint32_t, btrfs::MAX_LEVEL> slots;
 };
 
@@ -203,7 +203,7 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
 
 static void cow_tree(fs& f, path& p, uint8_t level) {
     auto& sb = f.dev.sb;
-    const auto& orig_h = *(btrfs::header*)p.bufs[level].data();
+    const auto& orig_h = *(btrfs::header*)p.bufs[level];
 
     if (!(orig_h.flags & btrfs::HEADER_FLAG_WRITTEN))
         return;
@@ -213,7 +213,7 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     auto& [chunk_start, c] = find_chunk(f, new_addr);
     auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
 
-    memcpy(&h, p.bufs[level].data(), sb.nodesize);
+    memcpy(&h, p.bufs[level], sb.nodesize);
 
     c.metadata_checked.insert(new_addr);
 
@@ -231,8 +231,8 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
 
     f.ref_changes.emplace(new_addr, ref_change{h.owner, 1});
 
-    if (!p.bufs[h.level + 1].empty()) { // FIXME - and level not maxed out
-        auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[h.level + 1].data() + sizeof(btrfs::header));
+    if (p.bufs[h.level + 1]) { // FIXME - and level not maxed out
+        auto items = (btrfs::key_ptr*)((uint8_t*)p.bufs[h.level + 1] + sizeof(btrfs::header));
         auto& parent = items[p.slots[h.level + 1]];
 
         parent.blockptr = h.bytenr;
@@ -274,26 +274,23 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     // FIXME - mark old tree as going away (delayed ref)
     // FIXME - what if COWing snapshotted tree?
 
-    p.bufs[level] = span((uint8_t*)c.maps[0] + new_addr - chunk_start,
-                         sb.nodesize);
+    p.bufs[level] = (uint8_t*)c.maps[0] + new_addr - chunk_start;
 }
 
 export void find_item2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
                        const btrfs::key& key, bool cow, uint64_t tree, path& p) {
-    auto& sb = f.dev.sb;
-
     // FIXME - separate COW and no-COW versions of this, so we can use
     //         const properly?
 
     read_metadata(f, addr, gen, level);
 
     auto& [chunk_start, c] = find_chunk(f, addr);
-    p.bufs[level] = span((uint8_t*)c.maps[0] + addr - chunk_start, sb.nodesize);
+    p.bufs[level] = (uint8_t*)c.maps[0] + addr - chunk_start;
 
     if (cow)
         cow_tree(f, p, level);
 
-    const auto& h = *(btrfs::header*)p.bufs[level].data();
+    const auto& h = *(btrfs::header*)p.bufs[level];
 
     if (h.level == 0) {
         auto items = span((btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
@@ -336,11 +333,11 @@ export void find_item2(fs& f, uint64_t addr, uint64_t gen, uint8_t level,
 }
 
 export span<uint8_t> item_span(path& p) {
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
-    return span((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset, it.size);
+    return span((uint8_t*)p.bufs[0] + sizeof(btrfs::header) + it.offset, it.size);
 }
 
 export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
@@ -350,7 +347,7 @@ export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
 
     find_item2(f, addr, gen, level, key, cow, tree, p);
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
 
     if (p.slots[0] >= h.nritems)
         return make_pair((btrfs::key){ 0xffffffffffffffff, (enum btrfs::key_type)0xff, 0xffffffffffffffff }, span<uint8_t>());
@@ -376,15 +373,15 @@ export const pair<uint64_t, chunk_info&> find_chunk(fs& f, uint64_t address) {
 }
 
 export uint32_t path_nritems(const path& p, uint8_t level) {
-    const auto& h = *(btrfs::header*)p.bufs[level].data();
+    const auto& h = *(btrfs::header*)p.bufs[level];
 
     return h.nritems;
 }
 
 export btrfs::key path_key(const path& p, uint8_t level) {
-    const auto& h = *(btrfs::header*)p.bufs[level].data();
+    const auto& h = *(btrfs::header*)p.bufs[level];
 
-    assert(!p.bufs[level].empty());
+    assert(p.bufs[level]);
     assert(p.slots[level] < h.nritems);
 
     if (level == 0) {
@@ -402,7 +399,7 @@ export bool prev_item(fs& f, path& p, bool cow) {
     if (p.slots[0] != 0) {
         if (cow) {
             for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
-                if (p.bufs[k].empty())
+                if (!p.bufs[k])
                     continue;
 
                 cow_tree(f, p, k);
@@ -416,7 +413,7 @@ export bool prev_item(fs& f, path& p, bool cow) {
     auto orig_p = p;
 
     for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
-        if (p.bufs[i].empty())
+        if (!p.bufs[i])
             break;
 
         if (p.slots[i] == 0)
@@ -425,8 +422,7 @@ export bool prev_item(fs& f, path& p, bool cow) {
         p.slots[i]--;
 
         for (auto j = (int8_t)i; j > 0; j--) {
-            auto& sb = f.dev.sb;
-            const auto& h = *(btrfs::header*)p.bufs[j].data();
+            const auto& h = *(btrfs::header*)p.bufs[j];
             auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
             auto& it = items[p.slots[j]];
 
@@ -435,12 +431,11 @@ export bool prev_item(fs& f, path& p, bool cow) {
             read_metadata(f, it.blockptr, it.generation, h.level - 1);
 
             auto& [chunk_start, c] = find_chunk(f, it.blockptr);
-            p.bufs[h.level - 1] = span((uint8_t*)c.maps[0] + it.blockptr - chunk_start,
-                                       sb.nodesize);
+            p.bufs[h.level - 1] = (uint8_t*)c.maps[0] + it.blockptr - chunk_start;
 
             if (cow) {
                 for (int8_t k = btrfs::MAX_LEVEL - 1; k >= h.level - 1; k--) {
-                    if (p.bufs[k].empty())
+                    if (!p.bufs[k])
                         continue;
 
                     cow_tree(f, p, k);
@@ -462,7 +457,7 @@ export bool next_leaf(fs& f, path& p, bool cow) {
     auto orig_p = p;
 
     for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
-        if (p.bufs[i].empty())
+        if (!p.bufs[i])
             break;
 
         if (p.slots[i] == path_nritems(p, i) - 1)
@@ -471,8 +466,7 @@ export bool next_leaf(fs& f, path& p, bool cow) {
         p.slots[i]++;
 
         for (auto j = (int8_t)i; j > 0; j--) {
-            auto& sb = f.dev.sb;
-            const auto& h = *(btrfs::header*)p.bufs[j].data();
+            const auto& h = *(btrfs::header*)p.bufs[j];
             auto items = span((btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header)), h.nritems);
             auto& it = items[p.slots[j]];
 
@@ -481,12 +475,11 @@ export bool next_leaf(fs& f, path& p, bool cow) {
             read_metadata(f, it.blockptr, it.generation, h.level - 1);
 
             auto& [chunk_start, c] = find_chunk(f, it.blockptr);
-            p.bufs[h.level - 1] = span((uint8_t*)c.maps[0] + it.blockptr - chunk_start,
-                                       sb.nodesize);
+            p.bufs[h.level - 1] = (uint8_t*)c.maps[0] + it.blockptr - chunk_start;
 
             if (cow) {
                 for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
-                    if (p.bufs[k].empty())
+                    if (!p.bufs[k])
                         continue;
 
                     cow_tree(f, p, k);
@@ -508,7 +501,7 @@ export bool next_item(fs& f, path& p, bool cow) {
     if (p.slots[0] != path_nritems(p, 0) - 1) {
         if (cow) {
             for (int8_t k = btrfs::MAX_LEVEL - 1; k >= 0; k--) {
-                if (p.bufs[k].empty())
+                if (!p.bufs[k])
                     continue;
 
                 cow_tree(f, p, k);
@@ -533,7 +526,7 @@ export uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap) {
                btrfs::REMAP_TREE_OBJECTID, p);
 
     {
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         if (h.nritems == 0)
             throw runtime_error("translate_remap: remap tree is empty");
@@ -550,7 +543,7 @@ export uint64_t translate_remap(fs& f, uint64_t addr, uint64_t& left_in_remap) {
             prev_item(f, p, false);
     }
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
@@ -678,13 +671,13 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
     auto& [chunk_start, c] = find_chunk(f, new_addr);
 
     auto& th2 = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
-    memcpy(&th2, p.bufs[level - 1].data(), sizeof(btrfs::header));
+    memcpy(&th2, p.bufs[level - 1], sizeof(btrfs::header));
     memset((uint8_t*)&th2 + sizeof(btrfs::header), 0,
            sb.nodesize - sizeof(btrfs::header));
 
     c.metadata_checked.insert(new_addr);
 
-    auto& th = *(btrfs::header*)p.bufs[level - 1].data();
+    auto& th = *(btrfs::header*)p.bufs[level - 1];
 
     if (level == 1) {
         auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
@@ -711,7 +704,7 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
 
     memset(&items2[1], 0, sb.nodesize - sizeof(btrfs::header) - sizeof(btrfs::key_ptr));
 
-    p.bufs[level] = span((uint8_t*)&th2, sb.nodesize);
+    p.bufs[level] = (uint8_t*)&th2;
     p.slots[level] = 0;
 
     if (th2.owner == btrfs::CHUNK_TREE_OBJECTID) {
@@ -752,7 +745,7 @@ static void add_new_level(fs& f, path& p, uint64_t tree, uint8_t level) {
 
 static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
     auto& sb = f.dev.sb;
-    auto& th = *(btrfs::header*)p.bufs[level].data();
+    auto& th = *(btrfs::header*)p.bufs[level];
     unsigned int split_point = th.nritems / 2;
 
     assert(level < btrfs::MAX_LEVEL - 2);
@@ -780,7 +773,7 @@ static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
 
     f.ref_changes.emplace(new_addr, ref_change{th2.owner, 1});
 
-    if (p.bufs[level + 1].empty())
+    if (!p.bufs[level + 1])
         add_new_level(f, p, tree, level + 1);
 
     p.slots[level + 1]++;
@@ -791,7 +784,7 @@ static void split_internal_tree(fs& f, path& p, uint64_t tree, uint8_t level) {
         p.slots[level + 1]--;
     else {
         p.slots[level] -= split_point;
-        p.bufs[level] = span((uint8_t*)&th2, sb.nodesize);
+        p.bufs[level] = (uint8_t*)&th2;
     }
 }
 
@@ -801,13 +794,13 @@ static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
     size_t max_items = (sb.nodesize - sizeof(btrfs::header)) / sizeof(btrfs::key_ptr);
 
     {
-        auto& th = *(btrfs::header*)p.bufs[level].data();
+        auto& th = *(btrfs::header*)p.bufs[level];
 
         if (th.nritems == max_items)
             split_internal_tree(f, p, tree, level);
     }
 
-    auto& th = *(btrfs::header*)p.bufs[level].data();
+    auto& th = *(btrfs::header*)p.bufs[level];
 
     auto* items = (btrfs::key_ptr*)((uint8_t*)&th + sizeof(btrfs::header));
 
@@ -827,7 +820,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
 
     auto new_addr = allocate_metadata(f, tree);
 
-    auto& th = *(btrfs::header*)p.bufs[0].data();
+    auto& th = *(btrfs::header*)p.bufs[0];
     auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
     size_t to_copy = 0, total_data = 0;
 
@@ -841,7 +834,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
     auto& [chunk_start, c] = find_chunk(f, new_addr);
 
     auto& th2 = *(btrfs::header*)((uint8_t*)c.maps[0] + new_addr - chunk_start);
-    memcpy(&th2, p.bufs[0].data(), sizeof(btrfs::header));
+    memcpy(&th2, p.bufs[0], sizeof(btrfs::header));
     memset((uint8_t*)&th2 + sizeof(btrfs::header), 0,
            sb.nodesize - sizeof(btrfs::header));
 
@@ -857,7 +850,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
 
     // move trailing entries to new tree
     memcpy((uint8_t*)&th2 + sb.nodesize - to_copy,
-           p.bufs[0].data() + sb.nodesize - total_data, to_copy);
+           p.bufs[0] + sb.nodesize - total_data, to_copy);
 
     for (unsigned int i = 0; i < th2.nritems; i++) {
         items2[i].offset += (uint32_t)(total_data - to_copy);
@@ -870,7 +863,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
 
     f.ref_changes.emplace(new_addr, ref_change{th.owner, 1});
 
-    if (p.bufs[1].empty())
+    if (!p.bufs[1])
         add_new_level(f, p, tree, 1);
 
     p.slots[1]++;
@@ -880,7 +873,7 @@ static void split_tree_at(fs& f, path& p, uint64_t tree,
         p.slots[1]--;
     else {
         p.slots[0] -= split_point;
-        p.bufs[0] = span((uint8_t*)&th2, sb.nodesize);
+        p.bufs[0] = (uint8_t*)&th2;
     }
 }
 
@@ -889,7 +882,7 @@ static void split_tree(fs& fs, path& p, uint64_t tree, size_t size_used,
     // FIXME - first try to push left and right
 
     auto nodesize = fs.dev.sb.nodesize;
-    auto& th = *(btrfs::header*)p.bufs[0].data();
+    auto& th = *(btrfs::header*)p.bufs[0];
     auto* items = (btrfs::item*)((uint8_t*)&th + sizeof(btrfs::header));
 
     size_t sum;
@@ -933,7 +926,7 @@ static void split_tree(fs& fs, path& p, uint64_t tree, size_t size_used,
     if (p.slots[0] != 0)
         split_tree_at(fs, p, tree, p.slots[0]);
 
-    auto num_items = ((btrfs::header*)p.bufs[0].data())->nritems;
+    auto num_items = ((btrfs::header*)p.bufs[0])->nritems;
 
     if (num_items != 0 && p.slots[0] < num_items - 1)
         split_tree_at(fs, p, tree, p.slots[0] + 1);
@@ -954,7 +947,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
     find_item2(f, addr, gen, level, key, true, tree, p);
 
     {
-        auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
         // FIXME - make sure this works if tree is currently empty
@@ -980,7 +973,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
         }
     }
 
-    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     // insert new btrfs::item
@@ -1008,7 +1001,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
         assert(off >= size + sizeof(btrfs::header));
 
-        memmove(p.bufs[0].data() + off - size, p.bufs[0].data() + off, to_move);
+        memmove(p.bufs[0] + off - size, p.bufs[0] + off, to_move);
     }
 
     if (p.slots[0] == 0)
@@ -1020,10 +1013,10 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
     if (p.slots[0] == 0) {
         for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
-            if (p.bufs[i].empty())
+            if (!p.bufs[i])
                 break;
 
-            const auto& h = *(btrfs::header*)p.bufs[i].data();
+            const auto& h = *(btrfs::header*)p.bufs[i];
             auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
             auto& it = items[p.slots[i]];
 
@@ -1044,7 +1037,7 @@ static btrfs::uuid get_chunk_tree_uuid(fs& f) {
     find_item2(f, addr, gen, level, {0, (btrfs::key_type)0, 0}, false,
                btrfs::ROOT_TREE_OBJECTID, p);
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
 
     return h.chunk_tree_uuid;
 }
@@ -1097,7 +1090,7 @@ export void add_tree(fs& f, uint64_t num) {
 
 export void delete_item2(fs& f, path& p) {
     auto& sb = f.dev.sb;
-    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     // move data
@@ -1112,8 +1105,8 @@ export void delete_item2(fs& f, path& p) {
                 after_item += items[i].size;
         }
 
-        memmove(p.bufs[0].data() + sb.nodesize - data_size + items[p.slots[0]].size,
-                p.bufs[0].data() + sb.nodesize - data_size,
+        memmove(p.bufs[0] + sb.nodesize - data_size + items[p.slots[0]].size,
+                p.bufs[0] + sb.nodesize - data_size,
                 after_item);
 
         for (unsigned int i = p.slots[0] + 1; i < h.nritems; i++) {
@@ -1131,10 +1124,10 @@ export void delete_item2(fs& f, path& p) {
         auto new_key = items[0].key;
 
         for (uint8_t i = 1; i < btrfs::MAX_LEVEL; i++) {
-            if (p.bufs[i].empty())
+            if (!p.bufs[i])
                 break;
 
-            const auto& h = *(btrfs::header*)p.bufs[i].data();
+            const auto& h = *(btrfs::header*)p.bufs[i];
             auto items = (btrfs::key_ptr*)((uint8_t*)&h + sizeof(btrfs::header));
             auto& it = items[p.slots[i]];
 
@@ -1155,7 +1148,7 @@ export void delete_item(fs& f, uint64_t tree, const btrfs::key& key) {
 
     find_item2(f, addr, gen, level, key, true, tree, p);
 
-    auto& h = *(btrfs::header*)p.bufs[0].data();
+    auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     if (p.slots[0] >= h.nritems || key != items[p.slots[0]].key) {
@@ -1171,7 +1164,7 @@ export void extend_item(fs& f, path& p, uint32_t size) {
     uint32_t delta;
 
     {
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
 
@@ -1205,7 +1198,7 @@ export void extend_item(fs& f, path& p, uint32_t size) {
     {
         // adjust item offsets and move data
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         unsigned int to_move = 0;
 
@@ -1220,7 +1213,7 @@ export void extend_item(fs& f, path& p, uint32_t size) {
 
         assert(off >= size + sizeof(btrfs::header));
 
-        memmove(p.bufs[0].data() + off - delta, p.bufs[0].data() + off, to_move);
+        memmove(p.bufs[0] + off - delta, p.bufs[0] + off, to_move);
 
         // change item size
 
@@ -1230,7 +1223,7 @@ export void extend_item(fs& f, path& p, uint32_t size) {
 
 export void shorten_item(fs& f, path& p, uint32_t size) {
     auto& sb = f.dev.sb;
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
@@ -1260,7 +1253,7 @@ export void shorten_item(fs& f, path& p, uint32_t size) {
 
         assert(off + to_move <= sb.nodesize);
 
-        memmove(p.bufs[0].data() + off + delta, p.bufs[0].data() + off,
+        memmove(p.bufs[0] + off + delta, p.bufs[0] + off,
                 to_move - delta);
     }
 
@@ -1271,10 +1264,10 @@ export void shorten_item(fs& f, path& p, uint32_t size) {
 
 export void change_key(path& p, const btrfs::key& key) {
     for (uint8_t i = 0; i < btrfs::MAX_LEVEL; i++) {
-        if (p.bufs[i].empty())
+        if (!p.bufs[i])
             break;
 
-        const auto& h = *(btrfs::header*)p.bufs[i].data();
+        const auto& h = *(btrfs::header*)p.bufs[i];
 
         // assert that tree has been COWed
         assert(!(h.flags & btrfs::HEADER_FLAG_WRITTEN));

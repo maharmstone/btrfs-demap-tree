@@ -308,7 +308,7 @@ static void change_fst_extent_count(fs& f, uint64_t start, int32_t change) {
 
 static void remove_from_free_space2(fs& f, path& p, uint64_t start,
                                     uint64_t len) {
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
 
@@ -411,7 +411,7 @@ static void remove_from_free_space(fs& f, uint64_t start, uint64_t len) {
                 break;
         }
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
 
@@ -518,7 +518,7 @@ static void add_to_free_space_extents(fs& f, uint64_t start, uint64_t len) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
         if (p.slots[0] < h.nritems) {
@@ -533,7 +533,7 @@ static void add_to_free_space_extents(fs& f, uint64_t start, uint64_t len) {
                 auto orig_p = p;
 
                 if (prev_item(f, p, true)) {
-                    const auto& h2 = *(btrfs::header*)p.bufs[0].data();
+                    const auto& h2 = *(btrfs::header*)p.bufs[0];
                     auto items2 = (btrfs::item*)((uint8_t*)&h2 + sizeof(btrfs::header));
                     auto& it2 = items2[p.slots[0]];
 
@@ -594,7 +594,7 @@ static void add_to_free_space_bitmaps(fs& f, uint64_t start, uint64_t len) {
                 break;
         }
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
         auto& it = items[p.slots[0]];
@@ -656,7 +656,7 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
     if (!prev_item(f, p, true))
         throw runtime_error("update_block_group_used: prev_item failed");
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     assert(p.slots[0] < h.nritems);
@@ -721,7 +721,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
         if (!prev_item(f, p, true))
             throw runtime_error("remove_chunk: prev_item failed");
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
@@ -758,7 +758,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::CHUNK_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         if (p.slots[0] == h.nritems)
             throw formatted_error("remove_chunk: {} not found", key);
@@ -811,7 +811,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
@@ -840,7 +840,7 @@ static void remove_chunk(fs& f, uint64_t offset) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::FREE_SPACE_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
@@ -1156,7 +1156,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::CHUNK_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         if (p.slots[0] >= h.nritems)
             throw formatted_error("allocate_stripe: could not find {}", key);
@@ -1220,7 +1220,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
 static void remove_from_remap_tree2(fs& f, path& p, uint64_t addr,
                                     uint64_t length) {
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
     auto& it = items[p.slots[0]];
     bool identity_remap = it.key.type == btrfs::key_type::IDENTITY_REMAP;
@@ -1282,7 +1282,7 @@ static void update_block_group_remap_bytes(fs& f, uint64_t address, int64_t delt
     if (!prev_item(f, p, true))
         throw runtime_error("update_block_group_remap_bytes: prev_item failed");
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     assert(p.slots[0] < h.nritems);
@@ -1327,7 +1327,7 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
         if (!prev_item(f, p, true))
             throw formatted_error("remove_from_remap_tree: prev_item failed");
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
         auto& it = items[p.slots[0]];
 
@@ -1362,7 +1362,7 @@ static void remove_from_remap_tree(fs& f, uint64_t src_addr, uint64_t length) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::REMAP_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         assert(p.slots[0] < h.nritems);
 
@@ -1402,7 +1402,7 @@ static void update_block_group_identity_remap_count(fs& f, uint64_t address,
     if (!prev_item(f, p, true))
         throw runtime_error("update_block_group_identity_remap_count: prev_item failed");
 
-    const auto& h = *(btrfs::header*)p.bufs[0].data();
+    const auto& h = *(btrfs::header*)p.bufs[0];
     auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
     assert(p.slots[0] < h.nritems);
@@ -1436,7 +1436,7 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
         find_item2(f, addr, gen, level, key, true,
                    btrfs::REMAP_TREE_OBJECTID, p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
         if (p.slots[0] < h.nritems) {
@@ -1451,7 +1451,7 @@ static void add_identity_remap(fs& f, uint64_t src_addr, uint64_t length) {
                 auto orig_p = p;
 
                 if (prev_item(f, p, true)) {
-                    const auto& h2 = *(btrfs::header*)p.bufs[0].data();
+                    const auto& h2 = *(btrfs::header*)p.bufs[0];
                     auto items2 = (btrfs::item*)((uint8_t*)&h2 + sizeof(btrfs::header));
                     auto& it2 = items2[p.slots[0]];
 
@@ -1529,7 +1529,7 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
         find_item2(f, addr, gen, level, { cursor, btrfs::key_type::REMAP, 0 },
                    false, btrfs::REMAP_TREE_OBJECTID, p);
 
-        auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
         if (p.slots[0] >= h.nritems)
@@ -1544,7 +1544,7 @@ static void process_remaps(fs& f, uint64_t offset, uint64_t length) {
             case btrfs::key_type::REMAP: {
                 assert(it.size == sizeof(btrfs::remap));
 
-                auto& r = *(btrfs::remap*)((uint8_t*)p.bufs[0].data() + sizeof(btrfs::header) + it.offset);
+                auto& r = *(btrfs::remap*)((uint8_t*)p.bufs[0] + sizeof(btrfs::header) + it.offset);
 
                 cursor = process_remap(f, it.key.objectid, it.key.offset,
                                        r.address);
@@ -1575,7 +1575,7 @@ static void finish_off_bg(fs& f, uint64_t offset, uint64_t length) {
                    btrfs::REMAP_TREE_OBJECTID, p);
 
         do {
-            auto& h = *(btrfs::header*)p.bufs[0].data();
+            auto& h = *(btrfs::header*)p.bufs[0];
             auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
             if (p.slots[0] == h.nritems)
@@ -1857,7 +1857,7 @@ static void shorten_block_group_items(fs& f) {
                btrfs::BLOCK_GROUP_TREE_OBJECTID, p);
 
     do {
-        auto& h = *(btrfs::header*)p.bufs[0].data();
+        auto& h = *(btrfs::header*)p.bufs[0];
         auto items = (btrfs::item*)((uint8_t*)&h + sizeof(btrfs::header));
 
         if (p.slots[0] == h.nritems)
@@ -1966,7 +1966,7 @@ static void demap(const filesystem::path& fn) {
                    {0, (btrfs::key_type)0, 0}, false, btrfs::REMAP_TREE_OBJECTID,
                    p);
 
-        const auto& h = *(btrfs::header*)p.bufs[0].data();
+        const auto& h = *(btrfs::header*)p.bufs[0];
 
         if (h.nritems != 0)
             throw runtime_error("remap tree was not empty");
