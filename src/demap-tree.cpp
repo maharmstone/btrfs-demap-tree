@@ -204,18 +204,12 @@ static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
         case btrfs::raid_type::RAID1C4: {
             assert(c.c.num_stripes > 0);
 
-            auto stripes = span(c.c.stripe, c.c.num_stripes);
-
-            for (auto& s : stripes) {
-                if (f.dev.sb.dev_item.devid != s.devid)
-                    throw formatted_error("device {} not found", s.devid);
-
-                if (lseek(f.dev.fd, s.offset + addr - chunk_start, SEEK_SET) == -1)
-                    throw formatted_error("lseek failed (errno {})", errno);
-
-                if (write(f.dev.fd, (char*)data.data(), data.size()) != (ssize_t)data.size())
-                    throw formatted_error("write failed (errno {})", errno);
+            for (uint16_t i = 0; i < c.c.num_stripes; i++) {
+                memcpy((uint8_t*)c.maps[i] + addr - chunk_start,
+                       data.data(), data.size());
             }
+
+            // FIXME - sync
 
             break;
         }
