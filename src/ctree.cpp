@@ -112,6 +112,7 @@ export struct fs {
     map<uint64_t, ref_change> ref_changes;
     set<uint64_t> changed_chunks;
     set<uint64_t> remove_chunks;
+    set<uint64_t> written_chunks;
 };
 
 export struct path {

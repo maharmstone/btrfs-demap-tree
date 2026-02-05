@@ -194,6 +194,8 @@ static uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
 static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
     auto& [chunk_start, c] = find_chunk(f, addr);
 
+    f.written_chunks.insert(chunk_start);
+
     switch (btrfs::get_chunk_raid_type(c.c)) {
         // FIXME - RAID5, RAID6, RAID10, RAID0
 
@@ -208,8 +210,6 @@ static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
                 memcpy((uint8_t*)c.maps[i] + addr - chunk_start,
                        data.data(), data.size());
             }
-
-            // FIXME - sync
 
             break;
         }
@@ -1050,8 +1050,6 @@ static void flush_transaction(fs& f) {
         swap(f.ref_changes, orig_ref_changes);
     }
 
-    set<uint64_t> written_chunks;
-
     while (!f.ref_changes.empty()) {
         decltype(f.ref_changes) local;
 
@@ -1076,17 +1074,19 @@ static void flush_transaction(fs& f) {
                        &h, sb.nodesize);
             }
 
-            written_chunks.insert(chunk_start);
+            f.written_chunks.insert(chunk_start);
         }
     }
 
     // sync
 
     for (unsigned int i = 0; i < 2; i++) {
-        for (auto chunk_start : written_chunks) {
+        for (auto chunk_start : f.written_chunks) {
             flush_chunk(f, chunk_start, i == 1);
         }
     }
+
+    f.written_chunks.clear();
 
     sb.generation++;
 
