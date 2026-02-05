@@ -265,19 +265,15 @@ static void fill_in_superblock_backup(fs& f) {
 static void write_superblocks(fs& f) {
     auto& d = f.dev;
 
-    for (auto a : btrfs::superblock_addrs) {
-        if (a + sizeof(d.sb) > f.dev.sb.dev_item.total_bytes)
+    for (size_t i = 0; i < btrfs::superblock_addrs.size(); i++) {
+        if (!f.dev.mmap_sb[i])
             break;
 
-        if (lseek(f.dev.fd, a, SEEK_SET) == -1)
-            throw formatted_error("lseek failed (errno {})", errno);
-
-        d.sb.bytenr = a;
+        d.sb.bytenr = btrfs::superblock_addrs[i];
 
         btrfs::calc_superblock_csum(d.sb);
 
-        if (write(f.dev.fd, (char*)&d.sb, sizeof(d.sb)) != (ssize_t)sizeof(d.sb))
-            throw formatted_error("write failed (errno {})", errno);
+        memcpy(f.dev.mmap_sb[i], &d.sb, sizeof(d.sb));
     }
 
     fill_in_superblock_backup(f);
