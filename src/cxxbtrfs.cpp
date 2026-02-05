@@ -18,7 +18,7 @@ using le16 = little_endian<uint16_t>;
 using le32 = little_endian<uint32_t>;
 using le64 = little_endian<uint64_t>;
 
-constexpr uint64_t superblock_addrs[] = { 0x10000, 0x4000000, 0x4000000000, 0x4000000000000 };
+constexpr array<uint64_t, 4> superblock_addrs = { 0x10000, 0x4000000, 0x4000000000, 0x4000000000000 };
 
 constexpr uint64_t MAGIC = 0x4d5f53665248425f;
 

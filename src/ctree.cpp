@@ -45,16 +45,40 @@ export struct device {
 
         if (size == 0)
             throw runtime_error("file size is 0");
+
+        if (size < btrfs::superblock_addrs[0] + sizeof(btrfs::super_block))
+            throw runtime_error("file was too small to have superblock");
+
+        for (size_t i = 0; i < btrfs::superblock_addrs.size(); i++) {
+            if (btrfs::superblock_addrs[i] + sizeof(btrfs::super_block) > size)
+                break;
+
+            auto ret = mmap(nullptr, sizeof(btrfs::super_block),
+                            PROT_READ | PROT_WRITE, MAP_SHARED, fd,
+                            btrfs::superblock_addrs[i]);
+            if (ret == MAP_FAILED)
+                throw formatted_error("mmap failed (errno {})", errno);
+
+            mmap_sb[i] = (btrfs::super_block*)ret;
+        }
     }
 
     ~device() {
         if (fd != 0)
             close(fd);
+
+        for (auto m : mmap_sb) {
+            if (!m)
+                break;
+
+            munmap(m, sizeof(btrfs::super_block));
+        }
     }
 
     int fd = 0;
     btrfs::super_block sb;
     uint64_t size;
+    array<btrfs::super_block*, btrfs::superblock_addrs.size()> mmap_sb;
 };
 
 export struct chunk : btrfs::chunk {
