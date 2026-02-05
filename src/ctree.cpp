@@ -577,18 +577,20 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
     if (c.metadata_checked.contains(addr))
         return;
 
-    uint64_t read_addr = addr;
+    uint8_t* ptr;
 
-    if (f.dev.sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
-        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
-            uint64_t left_in_remap;
+    if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED) {
+        uint64_t left_in_remap;
 
-            read_addr = translate_remap(f, addr, left_in_remap);
-            assert(left_in_remap >= f.dev.sb.nodesize);
-        }
-    }
+        auto read_addr = translate_remap(f, addr, left_in_remap);
+        assert(left_in_remap >= f.dev.sb.nodesize);
 
-    const auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + read_addr - chunk_start);
+        auto& [chunk_start2, c2] = find_chunk(f, read_addr);
+        ptr = (uint8_t*)c2.maps[0] + read_addr - chunk_start2;
+    } else
+        ptr = (uint8_t*)c.maps[0] + addr - chunk_start;
+
+    const auto& h = *(btrfs::header*)ptr;
 
     // FIXME - use other chunk stripe if verification fails (and write back good version)
 
