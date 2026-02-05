@@ -588,11 +588,7 @@ export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level) {
         }
     }
 
-    string tree;
-
-    tree.assign((char*)c.maps[0] + read_addr - chunk_start, sb.nodesize);
-
-    const auto& h = *(btrfs::header*)tree.data();
+    const auto& h = *(btrfs::header*)((uint8_t*)c.maps[0] + read_addr - chunk_start);
 
     // FIXME - use other chunk stripe if verification fails (and write back good version)
 
