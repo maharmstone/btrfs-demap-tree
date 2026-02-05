@@ -12,6 +12,9 @@ module;
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <linux/fs.h>
 
 export module ctree;
 
@@ -24,10 +27,24 @@ export const size_t MAX_STRIPES = 16;
 
 export struct device {
     device(const filesystem::path& fn) {
+        struct stat st;
+
         if (auto ret = open(fn.string().c_str(), O_RDWR); ret == -1)
             throw formatted_error("open failed (errno {})", errno);
         else
             fd = ret;
+
+        if (fstat(fd, &st) == -1)
+            throw formatted_error("fstat failed (errno {})", errno);
+
+        if (S_ISBLK(st.st_mode)) {
+            if (ioctl(fd, BLKGETSIZE64, &size))
+                throw formatted_error("BLKGETSIZE64 failed (errno {})", errno);
+        } else
+            size = st.st_size;
+
+        if (size == 0)
+            throw runtime_error("file size is 0");
     }
 
     ~device() {
@@ -37,6 +54,7 @@ export struct device {
 
     int fd = 0;
     btrfs::super_block sb;
+    uint64_t size;
 };
 
 export struct chunk : btrfs::chunk {
