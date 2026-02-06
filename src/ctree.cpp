@@ -246,6 +246,67 @@ export void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
         sb.dev_item.bytes_used += delta;
 }
 
+export void cut_out_superblocks(uint64_t offset, chunk_info& c) {
+    static const uint64_t SNIP_LENGTH = 65536;
+
+    if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
+        return;
+
+    switch (btrfs::get_chunk_raid_type(c.c)) {
+        case btrfs::raid_type::SINGLE:
+        case btrfs::raid_type::DUP:
+        case btrfs::raid_type::RAID1:
+        case btrfs::raid_type::RAID1C3:
+        case btrfs::raid_type::RAID1C4:
+            break;
+
+        // FIXME - RAID0, RAID10, RAID5, RAID6
+
+        default:
+            throw formatted_error("FIXME - cut_out_superblocks: unhandled RAID type {}\n",
+                                  btrfs::get_chunk_raid_type(c.c));
+    }
+
+    for (uint16_t i = 0; i < c.c.num_stripes; i++) {
+        const auto& s = c.c.stripe[i];
+
+        for (auto addr : btrfs::superblock_addrs) {
+            if (s.offset < addr + SNIP_LENGTH && s.offset + c.c.length > addr) {
+                uint64_t phys_start = max(addr, (uint64_t)s.offset);
+                uint64_t phys_end = min(addr + SNIP_LENGTH, s.offset + c.c.length);
+                uint64_t log_start = phys_start - s.offset + offset;
+                uint64_t len = phys_end - phys_start;
+
+                for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
+                    auto& e = *it;
+
+                    if (e.first < log_start + len && e.first + e.second > log_start) {
+                        if (log_start > e.first) {
+                            if (log_start + len < e.first + e.second) { // cut out middle
+                                uint64_t new_len = e.first + e.second - log_start - len;
+                                e.second = log_start - e.first;
+
+                                c.fst.emplace_back(log_start + len, new_len);
+                                break;
+                            } else // remove end
+                                e.second = log_start - e.first;
+                        } else {
+                            if (log_start + len < e.first + e.second) { // remove start
+                                uint64_t delta = log_start - e.first;
+
+                                e.first += delta;
+                                e.second -= delta;
+                            } else // remove whole thing
+                                c.fst.erase(it);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 static void put_in_sys_chunk_array(fs& f, uint64_t chunk_offset, chunk& c) {
     auto& sb = f.dev.sb;
     auto arr = span(sb.sys_chunk_array.data(), sb.sys_chunk_array_size);
