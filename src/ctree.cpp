@@ -366,7 +366,16 @@ static chunk_info& allocate_metadata_chunk(fs& f) {
 
     auto& ci2 = it->second;
 
-    // FIXME - mmap stripes
+    // mmap stripes
+
+    for (uint16_t i = 0; i < ci2.c.num_stripes; i++) {
+        auto ret = mmap(nullptr, ci2.c.length, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, f.dev.fd, ci2.c.stripe[i].offset);
+        if (ret == MAP_FAILED)
+            throw formatted_error("mmap failed (errno {})", errno);
+
+        ci2.maps[i] = ret;
+    }
 
     return ci2;
 }
