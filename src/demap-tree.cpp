@@ -1084,7 +1084,7 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
 
     assert(c.num_stripes == 0);
     assert(c.type & btrfs::BLOCK_GROUP_REMAPPED);
-    assert(!(c.type & btrfs::BLOCK_GROUP_REMAP));
+    assert(!(c.type & btrfs::BLOCK_GROUP_METADATA_REMAP));
     assert(!(c.type & btrfs::BLOCK_GROUP_SYSTEM));
 
     // make chunk SINGLE
@@ -1814,10 +1814,10 @@ static void demap(const filesystem::path& fn) {
     f.ref_changes.emplace(remap_tree_addr,
                           ref_change{btrfs::REMAP_TREE_OBJECTID, -1});
 
-    // remove all REMAP chunks
+    // remove all METADATA_REMAP chunks
 
     for (const auto& c : f.chunks) {
-        if (c.second.c.type & btrfs::BLOCK_GROUP_REMAP)
+        if (c.second.c.type & btrfs::BLOCK_GROUP_METADATA_REMAP)
             f.remove_chunks.emplace(c.first);
     }
 

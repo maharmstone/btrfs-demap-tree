@@ -379,7 +379,7 @@ static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
             break;
 
         case btrfs::REMAP_TREE_OBJECTID:
-            type = btrfs::BLOCK_GROUP_REMAP;
+            type = btrfs::BLOCK_GROUP_METADATA_REMAP;
             stripe_size = SZ_32M;
             break;
 
@@ -528,7 +528,7 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
             break;
 
         case btrfs::REMAP_TREE_OBJECTID:
-            type = btrfs::BLOCK_GROUP_REMAP;
+            type = btrfs::BLOCK_GROUP_METADATA_REMAP;
             break;
 
         default:
