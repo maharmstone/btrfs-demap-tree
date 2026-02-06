@@ -91,13 +91,6 @@ static void load_sys_chunks(fs& f) {
     }
 }
 
-static void walk_tree(fs& f, uint64_t tree, optional<btrfs::key> from,
-                      const function<bool(const btrfs::key&, span<const uint8_t>)>& func) {
-    auto [addr, gen, level] = find_tree_addr(f, tree);
-
-    walk_tree2(f, addr, gen, level, func, from);
-}
-
 static void load_chunks(fs& f) {
     walk_tree(f, btrfs::CHUNK_TREE_OBJECTID, nullopt,
               [&f](const btrfs::key& key, span<const uint8_t> item) {
@@ -143,52 +136,6 @@ static void load_chunks(fs& f) {
 
         return true;
     });
-}
-
-static uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
-    auto& sb = f.dev.sb;
-
-    // find hole in dev extent tree
-
-    vector<pair<uint64_t, uint64_t>> allocs;
-
-    walk_tree(f, btrfs::DEV_TREE_OBJECTID, btrfs::key{ sb.dev_item.devid, btrfs::key_type::DEV_EXTENT, 0 },
-        [&](const btrfs::key& key, span<const uint8_t> item) {
-            if (key.objectid > sb.dev_item.devid)
-                return false;
-
-            if (key.objectid == sb.dev_item.devid && key.type > btrfs::key_type::DEV_EXTENT)
-                return false;
-
-            if (item.size() < sizeof(btrfs::dev_extent)) {
-                throw formatted_error("allocate_stripe: {} was {} bytes, expected {}\n",
-                                      key, item.size(), sizeof(btrfs::dev_extent));
-            }
-
-            const auto& de = *(btrfs::dev_extent*)item.data();
-
-            if (!allocs.empty() && allocs.back().first + allocs.back().second == key.offset)
-                allocs.back().second += de.length;
-            else
-                allocs.emplace_back(key.offset, de.length);
-
-            return true;
-    });
-
-    uint64_t end = 0x100000; // don't allocate in first megabyte
-
-    for (const auto& a : allocs) {
-        if (a.first - end >= size)
-            return end;
-
-        end = a.first + a.second;
-    }
-
-    if (f.dev.sb.dev_item.total_bytes - end >= size)
-        return end;
-
-    // FIXME - format size nicely
-    throw formatted_error("Could not find {} bytes free to allocate chunk stripe.", size);
 }
 
 static void write_data(fs& f, uint64_t addr, span<const uint8_t> data) {
