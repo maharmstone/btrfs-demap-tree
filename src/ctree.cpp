@@ -571,7 +571,10 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
             return *ret;
     }
 
-    // FIXME - if no space, allocate new chunk
+    auto& c = allocate_metadata_chunk(f, tree);
+
+    if (auto ret = try_alloc(c); ret.has_value())
+        return *ret;
 
     throw runtime_error("could not find space to allocate new metadata");
 }
