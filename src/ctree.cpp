@@ -255,6 +255,8 @@ static void allocate_metadata_chunk(fs& f) {
 
     chunk_info ci;
 
+    // add CHUNK_ITEM
+
     ci.c.length = stripe_size;
     ci.c.owner = btrfs::EXTENT_TREE_OBJECTID;
     ci.c.stripe_len = 0x10000;
@@ -277,6 +279,40 @@ static void allocate_metadata_chunk(fs& f) {
     auto sp = insert_item(f, btrfs::CHUNK_TREE_OBJECTID, key, item_len);
 
     memcpy(sp.data(), &ci.c, item_len);
+
+    // add BLOCK_GROUP_ITEM
+
+    btrfs::block_group_item_v2 bgi;
+
+    bgi.used = 0;
+    bgi.chunk_objectid = btrfs::FIRST_CHUNK_TREE_OBJECTID;
+    bgi.flags = type;
+    bgi.remap_bytes = 0;
+    bgi.identity_remap_count = 0;
+
+    key = btrfs::key{ chunk_offset, btrfs::key_type::BLOCK_GROUP_ITEM,
+                      ci.c.length };
+
+    if (sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
+        auto sp = insert_item(f, btrfs::BLOCK_GROUP_TREE_OBJECTID, key,
+                              sizeof(btrfs::block_group_item_v2));
+        memcpy(sp.data(), &bgi, sizeof(btrfs::block_group_item_v2));
+    } else {
+        uint64_t bgt;
+
+        if (sb.compat_ro_flags & btrfs::FEATURE_COMPAT_RO_BLOCK_GROUP_TREE)
+            bgt = btrfs::BLOCK_GROUP_TREE_OBJECTID;
+        else
+            bgt = btrfs::EXTENT_TREE_OBJECTID;
+
+        auto sp = insert_item(f, bgt, key, sizeof(btrfs::block_group_item));
+        memcpy(sp.data(), &bgi, sizeof(btrfs::block_group_item));
+    }
+
+    // FIXME - update DEV_ITEM's bytes_used etc. (and in superblock)
+    // FIXME - insert into chunks list
+
+    // FIXME - return reference to chunk_info in chunks list
 }
 
 static uint64_t allocate_metadata(fs& f, uint64_t tree) {

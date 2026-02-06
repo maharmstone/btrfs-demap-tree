@@ -1907,6 +1907,8 @@ static void demap(const filesystem::path& fn) {
 
     add_data_reloc_tree(f);
 
+    // FIXME - make sure no race here if creating new BGI because of chunk allocation
+
     shorten_block_group_items(f);
 
     f.dev.sb.incompat_flags &= ~btrfs::FEATURE_INCOMPAT_REMAP_TREE;
