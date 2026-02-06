@@ -248,12 +248,12 @@ static void allocate_metadata_chunk(fs& f) {
                           stripe_size);
     }
 
-    // FIXME - initialize ci.fst
-    // FIXME - add FST info item to FST tree
-    // FIXME - add FST extent to FST tree
+    chunk_info ci;
+
+    ci.fst.emplace_back(chunk_offset, stripe_size);
+    // FIXME - cut out superblocks
     // FIXME - mmap stripes
 
-    chunk_info ci;
 
     // add CHUNK_ITEM
 
@@ -273,12 +273,14 @@ static void allocate_metadata_chunk(fs& f) {
         ci.c.stripe[i].dev_uuid = f.dev.sb.dev_item.uuid;
     }
 
-    btrfs::key key{ btrfs::FIRST_CHUNK_TREE_OBJECTID,
-                    btrfs::key_type::CHUNK_ITEM, chunk_offset };
-    size_t item_len = offsetof(btrfs::chunk, stripe) + (sizeof(btrfs::stripe) * ci.c.num_stripes);
-    auto sp = insert_item(f, btrfs::CHUNK_TREE_OBJECTID, key, item_len);
+    {
+        btrfs::key key{ btrfs::FIRST_CHUNK_TREE_OBJECTID,
+                        btrfs::key_type::CHUNK_ITEM, chunk_offset };
+        size_t item_len = offsetof(btrfs::chunk, stripe) + (sizeof(btrfs::stripe) * ci.c.num_stripes);
+        auto sp = insert_item(f, btrfs::CHUNK_TREE_OBJECTID, key, item_len);
 
-    memcpy(sp.data(), &ci.c, item_len);
+        memcpy(sp.data(), &ci.c, item_len);
+    }
 
     // add BLOCK_GROUP_ITEM
 
@@ -290,8 +292,8 @@ static void allocate_metadata_chunk(fs& f) {
     bgi.remap_bytes = 0;
     bgi.identity_remap_count = 0;
 
-    key = btrfs::key{ chunk_offset, btrfs::key_type::BLOCK_GROUP_ITEM,
-                      ci.c.length };
+    btrfs::key key{ chunk_offset, btrfs::key_type::BLOCK_GROUP_ITEM,
+                    ci.c.length };
 
     if (sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE) {
         auto sp = insert_item(f, btrfs::BLOCK_GROUP_TREE_OBJECTID, key,
@@ -308,6 +310,26 @@ static void allocate_metadata_chunk(fs& f) {
         auto sp = insert_item(f, bgt, key, sizeof(btrfs::block_group_item));
         memcpy(sp.data(), &bgi, sizeof(btrfs::block_group_item));
     }
+
+    // add FREE_SPACE_INFO (FIXME - old-style free space cache?)
+
+    {
+        btrfs::free_space_info fsi;
+
+        fsi.extent_count = 1;
+        fsi.flags = 0;
+
+        auto sp = insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
+                            { chunk_offset, btrfs::key_type::FREE_SPACE_INFO, stripe_size },
+                            sizeof(btrfs::free_space_info));
+        memcpy(sp.data(), &fsi, sizeof(btrfs::free_space_info));
+    }
+
+    // add FREE_SPACE_EXTENT
+
+    insert_item(f, btrfs::FREE_SPACE_TREE_OBJECTID,
+                { chunk_offset, btrfs::key_type::FREE_SPACE_EXTENT, stripe_size },
+                0);
 
     // FIXME - update DEV_ITEM's bytes_used etc. (and in superblock)
     // FIXME - insert into chunks list
