@@ -246,6 +246,65 @@ export void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
         sb.dev_item.bytes_used += delta;
 }
 
+static void put_in_sys_chunk_array(fs& f, uint64_t chunk_offset, chunk& c) {
+    auto& sb = f.dev.sb;
+    auto arr = span(sb.sys_chunk_array.data(), sb.sys_chunk_array_size);
+    btrfs::key key{btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM,
+                   chunk_offset};
+
+    size_t delta = sizeof(btrfs::key) + offsetof(btrfs::chunk, stripe) +
+                          (c.num_stripes * sizeof(btrfs::stripe));
+
+    if (sb.sys_chunk_array_size + delta > sb.sys_chunk_array.size())
+        throw runtime_error("put_in_sys_chunk_array: not enough room");
+
+    while (!arr.empty()) {
+        if (arr.size() < sizeof(btrfs::key))
+            throw runtime_error("sys array truncated");
+
+        auto& k = *(btrfs::key*)arr.data();
+
+        if (k == key)
+            throw formatted_error("put_in_sys_chunk_array: {} already present", k);
+
+        if (k > key) {
+            memmove(arr.data() + delta, arr.data(), delta);
+
+            k.objectid = 0x100;
+            k.type = btrfs::key_type::CHUNK_ITEM;
+            k.offset = chunk_offset;
+
+            memcpy(arr.data() + sizeof(btrfs::key), &c, delta - sizeof(btrfs::key));
+            sb.sys_chunk_array_size += delta;
+
+            return;
+        }
+
+        arr = arr.subspan(sizeof(btrfs::key));
+
+        assert(k.type == btrfs::key_type::CHUNK_ITEM);
+
+        if (arr.size() < offsetof(btrfs::chunk, stripe))
+            throw runtime_error("sys array truncated");
+
+        auto& c2 = *(btrfs::chunk*)arr.data();
+
+        if (arr.size() < offsetof(btrfs::chunk, stripe) + (c2.num_stripes * sizeof(btrfs::stripe)))
+            throw runtime_error("sys array truncated");
+
+        arr = arr.subspan(offsetof(btrfs::chunk, stripe) + (c2.num_stripes * sizeof(btrfs::stripe)));
+    }
+
+    auto& k = *(btrfs::key*)(sb.sys_chunk_array.data() + sb.sys_chunk_array_size);
+
+    k.objectid = 0x100;
+    k.type = btrfs::key_type::CHUNK_ITEM;
+    k.offset = chunk_offset;
+
+    memcpy((uint8_t*)&k + sizeof(btrfs::key), &c, delta - sizeof(btrfs::key));
+    sb.sys_chunk_array_size += delta;
+}
+
 static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
     uint64_t stripe_size, type;
@@ -387,6 +446,11 @@ static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
 
         ci2.maps[i] = ret;
     }
+
+    // put SYSTEM chunks in superblock
+
+    if (ci2.c.type & btrfs::BLOCK_GROUP_SYSTEM)
+        put_in_sys_chunk_array(f, chunk_offset, ci2.c);
 
     return ci2;
 }
