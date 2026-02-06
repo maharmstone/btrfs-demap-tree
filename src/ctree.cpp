@@ -124,6 +124,8 @@ export pair<btrfs::key, span<uint8_t>> find_item(fs& f, uint64_t tree,
                                                  const btrfs::key& key, bool cow);
 export void read_metadata(fs& f, uint64_t addr, uint64_t gen, uint8_t level);
 export const pair<uint64_t, chunk_info&> find_chunk(fs& f, uint64_t address);
+export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
+                                 uint32_t size);
 
 static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
                                  const btrfs::key& k, uint64_t address);
@@ -149,6 +151,23 @@ export tuple<uint64_t, uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
     const auto& ri = *(btrfs::root_item*)data.data();
 
     return { ri.bytenr, ri.generation, ri.level };
+}
+
+export void insert_dev_extent(fs& f, uint64_t devid, uint64_t phys,
+                              uint64_t chunk_offset, uint64_t length) {
+    auto key = btrfs::key{devid, btrfs::key_type::DEV_EXTENT, phys};
+    auto sp = insert_item(f, btrfs::DEV_TREE_OBJECTID, key,
+                          sizeof(btrfs::dev_extent));
+
+    auto& de = *(btrfs::dev_extent*)sp.data();
+
+    de.chunk_tree = btrfs::CHUNK_TREE_OBJECTID;
+    de.chunk_objectid = btrfs::FIRST_CHUNK_TREE_OBJECTID;
+    de.chunk_offset = chunk_offset;
+    de.length = length;
+
+    // mkfs sets this properly, Linux sets it to 0
+    memset(&de.chunk_tree_uuid, 0, sizeof(de.chunk_tree_uuid));
 }
 
 static uint64_t allocate_metadata(fs& f, uint64_t tree) {

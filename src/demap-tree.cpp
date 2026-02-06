@@ -1119,23 +1119,6 @@ static void update_block_group_flags(fs& f, uint64_t offset, uint64_t length,
     bgi.flags = flags;
 }
 
-static void insert_dev_extent(fs& f, uint64_t devid, uint64_t phys,
-                              uint64_t chunk_offset, uint64_t length) {
-    auto key = btrfs::key{devid, btrfs::key_type::DEV_EXTENT, phys};
-    auto sp = insert_item(f, btrfs::DEV_TREE_OBJECTID, key,
-                          sizeof(btrfs::dev_extent));
-
-    auto& de = *(btrfs::dev_extent*)sp.data();
-
-    de.chunk_tree = btrfs::CHUNK_TREE_OBJECTID;
-    de.chunk_objectid = btrfs::FIRST_CHUNK_TREE_OBJECTID;
-    de.chunk_offset = chunk_offset;
-    de.length = length;
-
-    // mkfs sets this properly, Linux sets it to 0
-    memset(&de.chunk_tree_uuid, 0, sizeof(de.chunk_tree_uuid));
-}
-
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     auto& sb = f.dev.sb;
 
