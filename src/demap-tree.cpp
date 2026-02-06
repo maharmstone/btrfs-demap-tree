@@ -1751,6 +1751,19 @@ static void add_data_reloc_tree(fs& f) {
     }
 }
 
+static bool balance_in_progress(fs& f) {
+    auto [addr, gen, level] = find_tree_addr(f, btrfs::ROOT_TREE_OBJECTID);
+    path p;
+    btrfs::key key{btrfs::BALANCE_OBJECTID, btrfs::key_type::TEMPORARY_ITEM, 0};
+
+    find_item2(f, addr, gen, level, key, false, btrfs::ROOT_TREE_OBJECTID, p);
+
+    if (p.slots[0] == path_nritems(p, 0))
+        return false;
+
+    return path_key(p, 0) == key;
+}
+
 static void demap(const filesystem::path& fn) {
     fs f(fn);
 
@@ -1777,6 +1790,9 @@ static void demap(const filesystem::path& fn) {
 
     load_sys_chunks(f);
     load_chunks(f);
+
+    if (balance_in_progress(f))
+        throw runtime_error("not allowing as balance in progress"); // FIXME?
 
     fill_in_superblock_backup(f);
 
