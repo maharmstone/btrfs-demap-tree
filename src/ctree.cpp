@@ -355,7 +355,11 @@ static void allocate_metadata_chunk(fs& f) {
                 { chunk_offset, btrfs::key_type::FREE_SPACE_EXTENT, stripe_size },
                 0);
 
-    // FIXME - update DEV_ITEM's bytes_used etc. (and in superblock)
+    // update DEV_ITEM's bytes_used (and in superblock)
+
+    update_dev_item_bytes_used(f, f.dev.sb.dev_item.devid,
+                               stripes_needed * stripe_size);
+
     // FIXME - insert into chunks list
 
     // FIXME - return reference to chunk_info in chunks list
