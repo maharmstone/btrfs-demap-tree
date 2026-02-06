@@ -23,6 +23,7 @@ import formatted_error;
 
 using namespace std;
 
+static const uint64_t SZ_32M = 0x2000000;
 static const uint64_t SZ_1G = 0x40000000;
 
 export const size_t MAX_STRIPES = 16;
@@ -245,19 +246,29 @@ export void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
         sb.dev_item.bytes_used += delta;
 }
 
-static chunk_info& allocate_metadata_chunk(fs& f) {
+static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
     uint64_t stripe_size, type;
     uint64_t stripes_needed;
     array<uint64_t, MAX_STRIPES> offs;
     uint64_t chunk_offset;
 
-    // FIXME - chunk tree (SYSTEM, goes in superblock
-    // FIXME - remap tree (METADATA_REMAP)
-    type = btrfs::BLOCK_GROUP_METADATA;
+    switch (tree) {
+        case btrfs::CHUNK_TREE_OBJECTID:
+            type = btrfs::BLOCK_GROUP_SYSTEM; // FIXME - goes in superblock
+            stripe_size = SZ_32M;
+            break;
 
-    // FIXME - determine how big a chunk we want
-    stripe_size = SZ_1G;
+        case btrfs::REMAP_TREE_OBJECTID:
+            type = btrfs::BLOCK_GROUP_REMAP;
+            stripe_size = SZ_32M;
+            break;
+
+        default:
+            type = btrfs::BLOCK_GROUP_METADATA;
+            stripe_size = SZ_1G; // FIXME - determine how big a chunk we want
+            break;
+    }
 
     // FIXME - determine what RAID type we want (look at what we've got already)
     type |= btrfs::BLOCK_GROUP_DUP;
