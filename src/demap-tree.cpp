@@ -622,30 +622,6 @@ static void update_block_group_used(fs& f, uint64_t address, int64_t delta) {
     sb.bytes_used += delta;
 }
 
-static void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
-    auto& sb = f.dev.sb;
-
-    auto key = btrfs::key{btrfs::DEV_ITEMS_OBJECTID, btrfs::key_type::DEV_ITEM, devid};
-    auto [found_key, sp] = find_item(f, btrfs::CHUNK_TREE_OBJECTID, key, true);
-
-    if (found_key != key) {
-        throw formatted_error("update_dev_item_bytes_used: found {}, expected {}",
-                              found_key, key);
-    }
-
-    if (sp.size() != sizeof(btrfs::dev_item)) {
-        throw formatted_error("update_dev_item_bytes_used: {} was {} bytes, expected {}",
-                              key, sp.size(), sizeof(btrfs::dev_item));
-    }
-
-    auto& di = *(btrfs::dev_item*)sp.data();
-
-    di.bytes_used += delta;
-
-    if (sb.dev_item.devid == devid)
-        sb.dev_item.bytes_used += delta;
-}
-
 static void remove_chunk(fs& f, uint64_t offset) {
     auto& sb = f.dev.sb;
     uint64_t length;
