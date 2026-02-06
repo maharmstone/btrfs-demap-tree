@@ -23,6 +23,8 @@ import formatted_error;
 
 using namespace std;
 
+static const uint64_t SZ_1G = 0x40000000;
+
 export const size_t MAX_STRIPES = 16;
 
 export struct device {
@@ -131,6 +133,7 @@ export span<uint8_t> insert_item(fs& f, uint64_t tree, const btrfs::key& key,
 
 static void insert_internal_node(fs& f, path& p, uint64_t tree, uint8_t level,
                                  const btrfs::key& k, uint64_t address);
+static uint64_t find_next_chunk_offset(fs& f);
 
 export tuple<uint64_t, uint64_t, uint8_t> find_tree_addr(fs& f, uint64_t tree) {
     auto& sb = f.dev.sb;
@@ -218,6 +221,64 @@ export uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
     throw formatted_error("Could not find {} bytes free to allocate chunk stripe.", size);
 }
 
+static void allocate_metadata_chunk(fs& f) {
+    auto& sb = f.dev.sb;
+    uint64_t stripe_size, type;
+    uint64_t stripes_needed;
+    array<uint64_t, MAX_STRIPES> offs;
+    uint64_t chunk_offset;
+
+    // FIXME - chunk tree (SYSTEM, goes in superblock
+    // FIXME - remap tree (METADATA_REMAP)
+    type = btrfs::BLOCK_GROUP_METADATA;
+
+    // FIXME - determine how big a chunk we want
+    stripe_size = SZ_1G;
+
+    // FIXME - determine what RAID type we want (look at what we've got already)
+    type |= btrfs::BLOCK_GROUP_DUP;
+    stripes_needed = 2;
+
+    chunk_offset = find_next_chunk_offset(f);
+
+    for (uint16_t i = 0; i < stripes_needed; i++) {
+        offs[i] = find_hole_for_chunk(f, stripe_size);
+
+        insert_dev_extent(f, f.dev.sb.dev_item.devid, offs[i], chunk_offset,
+                          stripe_size);
+    }
+
+    // FIXME - initialize ci.fst
+    // FIXME - add FST info item to FST tree
+    // FIXME - add FST extent to FST tree
+    // FIXME - mmap stripes
+
+    chunk_info ci;
+
+    ci.c.length = stripe_size;
+    ci.c.owner = btrfs::EXTENT_TREE_OBJECTID;
+    ci.c.stripe_len = 0x10000;
+    ci.c.type = type;
+    ci.c.io_align = 0x10000;
+    ci.c.io_width = 0x10000;
+    ci.c.sector_size = sb.sectorsize;
+    ci.c.num_stripes = stripes_needed;
+    ci.c.sub_stripes = 1;
+
+    for (uint16_t i = 0; i < stripes_needed; i++) {
+        ci.c.stripe[i].devid = f.dev.sb.dev_item.devid;
+        ci.c.stripe[i].offset = offs[i];
+        ci.c.stripe[i].dev_uuid = f.dev.sb.dev_item.uuid;
+    }
+
+    btrfs::key key{ btrfs::FIRST_CHUNK_TREE_OBJECTID,
+                    btrfs::key_type::CHUNK_ITEM, chunk_offset };
+    size_t item_len = offsetof(btrfs::chunk, stripe) + (sizeof(btrfs::stripe) * ci.c.num_stripes);
+    auto sp = insert_item(f, btrfs::CHUNK_TREE_OBJECTID, key, item_len);
+
+    memcpy(sp.data(), &ci.c, item_len);
+}
+
 static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     uint64_t type;
     auto& sb = f.dev.sb;
@@ -236,14 +297,8 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
             break;
     }
 
-    // allocate from FST
-
-    for (auto& [_, c] : f.chunks) {
-        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
-            continue;
-
-        if (!(c.c.type & type))
-            continue;
+    auto try_alloc = [&sb](chunk_info& c) -> optional<uint64_t> {
+        // allocate from FST
 
         for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
             auto& e = *it;
@@ -262,6 +317,19 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
 
             return addr;
         }
+
+        return nullopt;
+    };
+
+    for (auto& [_, c] : f.chunks) {
+        if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
+            continue;
+
+        if (!(c.c.type & type))
+            continue;
+
+        if (auto ret = try_alloc(c); ret.has_value())
+            return *ret;
     }
 
     // FIXME - if no space, allocate new chunk
@@ -1493,4 +1561,33 @@ export void prune_trees(fs& f) {
 
     if (sb.chunk_root_generation == sb.generation + 1 && sb.chunk_root_level != 0)
         prune_trees2(f, btrfs::CHUNK_TREE_OBJECTID, sb.chunk_root);
+}
+
+static uint64_t find_next_chunk_offset(fs& f) {
+    auto [addr, gen, level] = find_tree_addr(f, btrfs::CHUNK_TREE_OBJECTID);
+    auto key = btrfs::key{ btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM,
+                           0xffffffffffffffff };
+    path p;
+
+    find_item2(f, addr, gen, level, key, false, btrfs::CHUNK_TREE_OBJECTID, p);
+
+    while (true) {
+        if (!prev_item(f, p, false))
+            throw runtime_error("find_next_chunk_offset: prev_item failed");
+
+        auto key = path_key(p, 0);
+
+        if (key.objectid != btrfs::FIRST_CHUNK_TREE_OBJECTID ||
+            key.type != btrfs::key_type::CHUNK_ITEM) {
+            continue;
+        }
+
+        auto sp = item_span(p);
+
+        assert(sp.size() >= offsetof(btrfs::chunk, stripe));
+
+        auto& ci = *(btrfs::chunk*)sp.data();
+
+        return key.offset + ci.length;
+    }
 }
