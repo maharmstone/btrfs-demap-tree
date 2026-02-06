@@ -245,7 +245,7 @@ export void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
         sb.dev_item.bytes_used += delta;
 }
 
-static void allocate_metadata_chunk(fs& f) {
+static chunk_info& allocate_metadata_chunk(fs& f) {
     auto& sb = f.dev.sb;
     uint64_t stripe_size, type;
     uint64_t stripes_needed;
@@ -276,8 +276,6 @@ static void allocate_metadata_chunk(fs& f) {
 
     ci.fst.emplace_back(chunk_offset, stripe_size);
     // FIXME - cut out superblocks
-    // FIXME - mmap stripes
-
 
     // add CHUNK_ITEM
 
@@ -360,9 +358,17 @@ static void allocate_metadata_chunk(fs& f) {
     update_dev_item_bytes_used(f, f.dev.sb.dev_item.devid,
                                stripes_needed * stripe_size);
 
-    // FIXME - insert into chunks list
+    // insert into chunks list
 
-    // FIXME - return reference to chunk_info in chunks list
+    auto [it, inserted] = f.chunks.insert(make_pair(chunk_offset, ci));
+
+    assert(inserted);
+
+    auto& ci2 = it->second;
+
+    // FIXME - mmap stripes
+
+    return ci2;
 }
 
 static uint64_t allocate_metadata(fs& f, uint64_t tree) {
