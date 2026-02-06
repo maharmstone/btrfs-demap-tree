@@ -306,7 +306,6 @@ export void cut_out_superblocks(uint64_t offset, chunk_info& c) {
     }
 }
 
-
 static void put_in_sys_chunk_array(fs& f, uint64_t chunk_offset, chunk& c) {
     auto& sb = f.dev.sb;
     auto arr = span(sb.sys_chunk_array.data(), sb.sys_chunk_array_size);
@@ -406,7 +405,6 @@ static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
     chunk_info ci;
 
     ci.fst.emplace_back(chunk_offset, stripe_size);
-    // FIXME - cut out superblocks
 
     // add CHUNK_ITEM
 
@@ -434,6 +432,10 @@ static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
 
         memcpy(sp.data(), &ci.c, item_len);
     }
+
+    // cut out superblocks
+
+    cut_out_superblocks(chunk_offset, ci);
 
     // add BLOCK_GROUP_ITEM
 
