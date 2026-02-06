@@ -1766,7 +1766,11 @@ static void demap(const filesystem::path& fn) {
     if (!(sb.incompat_flags & btrfs::FEATURE_INCOMPAT_REMAP_TREE))
         throw runtime_error("remap-tree incompat flag not set");
 
-    // FIXME - double-check that FST and BGT flags are set
+    if (!(sb.compat_ro_flags & btrfs::FEATURE_COMPAT_RO_FREE_SPACE_TREE))
+        throw runtime_error("free-space-tree compat_ro flag not set");
+
+    if (!(sb.compat_ro_flags & btrfs::FEATURE_COMPAT_RO_BLOCK_GROUP_TREE))
+        throw runtime_error("block-group-tree compat_ro flag not set");
 
     if (sb.num_devices != 1)
         throw runtime_error("multi-device support not yet implemented"); // FIXME
