@@ -100,6 +100,7 @@ export struct chunk_info {
     bool fst_using_bitmaps = false;
     array<void*, MAX_STRIPES> maps{};
     set<uint64_t> metadata_checked;
+    uint64_t alloc_cursor = 0;
 };
 
 export struct ref_change {
@@ -539,6 +540,57 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     auto try_alloc = [&sb](chunk_info& c) -> optional<uint64_t> {
         // allocate from FST
 
+        if (c.alloc_cursor != 0) {
+            for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
+                auto& e = *it;
+
+                // after alloc_cursor, grab first thing we can get
+                if (c.alloc_cursor < e.first) {
+                    auto addr = e.first;
+
+                    if (e.second == sb.nodesize)
+                        c.fst.erase(it);
+                    else {
+                        e.first += sb.nodesize;
+                        e.second -= sb.nodesize;
+                    }
+
+                    return addr;
+                }
+
+                if (c.alloc_cursor >= e.first + e.second)
+                    continue;
+
+                if (c.alloc_cursor == e.first) {
+                    auto addr = e.first;
+
+                    if (e.second == sb.nodesize) // remove whole thing
+                        c.fst.erase(it);
+                    else {  // remove start
+                        e.first += sb.nodesize;
+                        e.second -= sb.nodesize;
+                    }
+
+                    return addr;
+                }
+
+                if (c.alloc_cursor + sb.nodesize == e.first + e.second) { // remove end
+                    e.second -= sb.nodesize;
+
+                    return e.first + e.second;
+                }
+
+                // remove middle
+
+                c.fst.insert(it, make_pair(e.first, c.alloc_cursor - e.first));
+
+                e.second -= c.alloc_cursor + sb.nodesize - e.first;
+                e.first = c.alloc_cursor + sb.nodesize;
+
+                return c.alloc_cursor;
+            }
+        }
+
         for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
             auto& e = *it;
 
@@ -567,14 +619,18 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
         if (!(c.c.type & type))
             continue;
 
-        if (auto ret = try_alloc(c); ret.has_value())
+        if (auto ret = try_alloc(c); ret.has_value()) {
+            c.alloc_cursor = *ret + sb.nodesize;
             return *ret;
+        }
     }
 
     auto& c = allocate_metadata_chunk(f, tree);
 
-    if (auto ret = try_alloc(c); ret.has_value())
+    if (auto ret = try_alloc(c); ret.has_value()) {
+        c.alloc_cursor = *ret + sb.nodesize;
         return *ret;
+    }
 
     throw runtime_error("could not find space to allocate new metadata");
 }
