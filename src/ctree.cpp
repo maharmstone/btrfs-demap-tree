@@ -635,6 +635,13 @@ static uint64_t allocate_metadata(fs& f, uint64_t tree) {
     throw runtime_error("could not find space to allocate new metadata");
 }
 
+static void add_ref_change(fs& f, uint64_t bytenr, uint64_t owner, int diff) {
+    auto [it2, inserted] = f.ref_changes.emplace(bytenr, ref_change{owner, diff});
+
+    if (!inserted)
+        it2->second.refcount_change += diff;
+}
+
 static void cow_tree(fs& f, path& p, uint8_t level) {
     auto& sb = f.dev.sb;
     const auto& orig_h = *(btrfs::header*)p.bufs[level];
@@ -655,13 +662,7 @@ static void cow_tree(fs& f, path& p, uint8_t level) {
     h.generation = sb.generation + 1;
     h.flags &= ~btrfs::HEADER_FLAG_WRITTEN;
 
-    {
-        auto [it2, inserted] = f.ref_changes.emplace(orig_h.bytenr,
-                                                     ref_change{h.owner, -1});
-
-        if (!inserted)
-            it2->second.refcount_change--;
-    }
+    add_ref_change(f, orig_h.bytenr, h.owner, -1);
 
     f.ref_changes.emplace(new_addr, ref_change{h.owner, 1});
 
@@ -1751,13 +1752,7 @@ static void prune_trees_recurse(fs& f, uint64_t addr) {
         if (h2.nritems != 0)
             continue;
 
-        {
-            auto [it2, inserted] = f.ref_changes.emplace(it.blockptr,
-                                                         ref_change{h.owner, -1});
-
-            if (!inserted)
-                it2->second.refcount_change--;
-        }
+        add_ref_change(f, it.blockptr, h.owner, -1);
 
         memmove(&items[i], &items[i + 1], (h.nritems - i - 1) * sizeof(btrfs::key_ptr));
         i--;
@@ -1809,12 +1804,7 @@ static void prune_trees2(fs& f, uint64_t root, uint64_t addr) {
             ri.level--;
         }
 
-        {
-            auto [it2, inserted] = f.ref_changes.emplace(h.bytenr,
-                                                            ref_change{root, -1});
-            if (!inserted)
-                it2->second.refcount_change--;
-        }
+        add_ref_change(f, h.bytenr, root, -1);
 
         addr = it.blockptr;
     }
