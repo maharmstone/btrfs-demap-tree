@@ -1015,9 +1015,10 @@ static void flush_transaction(fs& f) {
 
     write_superblocks(f);
 
-    // FIXME - unmark new metadata
-    // FIXME - free old metadata
+    // FIXME - when do we clear metadata_checked sets? ever?
+
     // FIXME - update in-memory FST
+
     // FIXME - TRIM? (optional?)
 }
 
