@@ -182,7 +182,10 @@ export uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
 
     // find hole in dev extent tree
 
-    vector<pair<uint64_t, uint64_t>> allocs;
+    vector<pair<uint64_t, uint64_t>> allocs, holes;
+
+    // don't allocate in first megabyte
+    allocs.emplace_back(0, 0x100000);
 
     walk_tree(f, btrfs::DEV_TREE_OBJECTID, btrfs::key{ sb.dev_item.devid, btrfs::key_type::DEV_EXTENT, 0 },
         [&](const btrfs::key& key, span<const uint8_t> item) {
@@ -199,6 +202,8 @@ export uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
 
             const auto& de = *(btrfs::dev_extent*)item.data();
 
+            assert (allocs.empty() || allocs.back().first + allocs.back().second <= key.offset);
+
             if (!allocs.empty() && allocs.back().first + allocs.back().second == key.offset)
                 allocs.back().second += de.length;
             else
@@ -207,17 +212,24 @@ export uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
             return true;
     });
 
-    uint64_t end = 0x100000; // don't allocate in first megabyte
+    {
+        uint64_t last_end = 0;
 
-    for (const auto& a : allocs) {
-        if (a.first - end >= size)
-            return end;
+        for (const auto& a : allocs) {
+            if (a.first > last_end)
+                holes.emplace_back(last_end, a.first - last_end);
 
-        end = a.first + a.second;
+            last_end = a.first + a.second;
+        }
+
+        if (f.dev.sb.dev_item.total_bytes > last_end)
+            holes.emplace_back(last_end, f.dev.sb.dev_item.total_bytes - last_end);
     }
 
-    if (f.dev.sb.dev_item.total_bytes - end >= size)
-        return end;
+    for (const auto& h : holes) {
+        if (h.second >= size)
+            return h.first;
+    }
 
     // FIXME - format size nicely
     throw formatted_error("Could not find {} bytes free to allocate chunk stripe.", size);
