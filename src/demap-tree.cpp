@@ -879,11 +879,55 @@ static void flush_chunk(fs& f, uint64_t offset, bool sync) {
     }
 }
 
+static void add_to_in_memory_fst(chunk_info& c, uint64_t start, uint64_t length) {
+    for (auto it = c.fst.begin(); it != c.fst.end(); it++) {
+        auto& e = *it;
+
+        if (e.first + e.second < start)
+            continue;
+
+        if (e.first == start + length) { // moving e.first earlier
+            e.first -= length;
+            e.second += length;
+        } else if (e.first + e.second == start) { // moving end later
+            if (next(it) != c.fst.end() && next(it)->first == start + length) {
+                e.second += length + next(it)->second;
+                c.fst.erase(next(it));
+            } else
+                e.second += length;
+        } else
+            c.fst.insert(it, make_pair(start, length));
+
+        return;
+    }
+
+    c.fst.insert(c.fst.end(), make_pair(start, length));
+}
+
+static void fixup_in_memory_fst(fs& f, const set<uint64_t>& removed_nodes) {
+    auto& sb = f.dev.sb;
+    uint64_t chunk_start;
+    chunk_info* c = nullptr;
+
+    for (auto n : removed_nodes) { // ordered
+        if (!c || n >= chunk_start + c->c.length) {
+            auto p = find_chunk(f, n);
+
+            chunk_start = p.first;
+            c = &p.second;
+        }
+
+        add_to_in_memory_fst(*c, n, sb.nodesize);
+    }
+}
+
 static void flush_transaction(fs& f) {
     auto& sb = f.dev.sb;
 
     if (f.ref_changes.empty())
         return;
+
+    set<uint64_t> removed_nodes;
 
     {
         auto orig_ref_changes = f.ref_changes;
@@ -923,6 +967,7 @@ static void flush_transaction(fs& f) {
                                     { h.bytenr, btrfs::key_type::METADATA_ITEM, h.level });
                     }
 
+                    removed_nodes.insert(h.bytenr);
                     update_block_group_used(f, h.bytenr, -(int64_t)sb.nodesize);
                 } else {
                     remove_from_free_space(f, h.bytenr, sb.nodesize);
@@ -1016,8 +1061,9 @@ static void flush_transaction(fs& f) {
     write_superblocks(f);
 
     // FIXME - when do we clear metadata_checked sets? ever?
+    // FIXME - do MADV_DONTNEED for tree blocks that we've freed
 
-    // FIXME - update in-memory FST
+    fixup_in_memory_fst(f, removed_nodes);
 
     // FIXME - TRIM? (optional?)
 }
