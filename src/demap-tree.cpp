@@ -1161,6 +1161,13 @@ static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
         auto& c2 = f.chunks.at(offset);
 
         memcpy(&c2.c, &c, offsetof(btrfs::chunk, stripe) + (c.num_stripes * sizeof(btrfs::stripe)));
+
+        auto ret = mmap(nullptr, c.length, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, f.dev.fd, c.stripe[0].offset);
+        if (ret == MAP_FAILED)
+            throw formatted_error("mmap failed (errno {})", errno);
+
+        c2.maps[0] = ret;
     }
 
     flush_transaction(f);
