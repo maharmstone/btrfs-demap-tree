@@ -26,6 +26,8 @@ using namespace std;
 static const uint64_t SZ_32M = 0x2000000;
 static const uint64_t SZ_1G = 0x40000000;
 
+static const uint64_t SUPERBLOCK_SNIP_LENGTH = 65536;
+
 export const size_t MAX_STRIPES = 16;
 
 export struct device {
@@ -177,7 +179,7 @@ export void insert_dev_extent(fs& f, uint64_t devid, uint64_t phys,
     memset(&de.chunk_tree_uuid, 0, sizeof(de.chunk_tree_uuid));
 }
 
-export uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
+export uint64_t find_hole_for_chunk(fs& f, uint64_t size, bool avoid_super) {
     auto& sb = f.dev.sb;
 
     // find hole in dev extent tree
@@ -215,15 +217,34 @@ export uint64_t find_hole_for_chunk(fs& f, uint64_t size) {
     {
         uint64_t last_end = 0;
 
+        auto add_hole = [&holes, avoid_super](uint64_t start, uint64_t length) {
+            if (avoid_super) {
+                for (auto s : btrfs::superblock_addrs) {
+                    if (s + SUPERBLOCK_SNIP_LENGTH > start && s < start + length) {
+                        if (s > start)
+                            holes.emplace_back(start, s - start);
+
+                        if (s + SUPERBLOCK_SNIP_LENGTH >= start + length)
+                            return;
+
+                        length -= s + SUPERBLOCK_SNIP_LENGTH - start;
+                        start = s + SUPERBLOCK_SNIP_LENGTH;
+                    }
+                }
+            }
+
+            holes.emplace_back(start, length);
+        };
+
         for (const auto& a : allocs) {
             if (a.first > last_end)
-                holes.emplace_back(last_end, a.first - last_end);
+                add_hole(last_end, a.first - last_end);
 
             last_end = a.first + a.second;
         }
 
         if (f.dev.sb.dev_item.total_bytes > last_end)
-            holes.emplace_back(last_end, f.dev.sb.dev_item.total_bytes - last_end);
+            add_hole(last_end, f.dev.sb.dev_item.total_bytes - last_end);
     }
 
     for (const auto& h : holes) {
@@ -260,8 +281,6 @@ export void update_dev_item_bytes_used(fs& f, uint64_t devid, int64_t delta) {
 }
 
 export void cut_out_superblocks(uint64_t offset, chunk_info& c) {
-    static const uint64_t SNIP_LENGTH = 65536;
-
     if (c.c.type & btrfs::BLOCK_GROUP_REMAPPED)
         return;
 
@@ -284,9 +303,9 @@ export void cut_out_superblocks(uint64_t offset, chunk_info& c) {
         const auto& s = c.c.stripe[i];
 
         for (auto addr : btrfs::superblock_addrs) {
-            if (s.offset < addr + SNIP_LENGTH && s.offset + c.c.length > addr) {
+            if (s.offset < addr + SUPERBLOCK_SNIP_LENGTH && s.offset + c.c.length > addr) {
                 uint64_t phys_start = max(addr, (uint64_t)s.offset);
-                uint64_t phys_end = min(addr + SNIP_LENGTH, s.offset + c.c.length);
+                uint64_t phys_end = min(addr + SUPERBLOCK_SNIP_LENGTH, s.offset + c.c.length);
                 uint64_t log_start = phys_start - s.offset + offset;
                 uint64_t len = phys_end - phys_start;
 
@@ -409,7 +428,7 @@ static chunk_info& allocate_metadata_chunk(fs& f, uint64_t tree) {
     chunk_offset = find_next_chunk_offset(f);
 
     for (uint16_t i = 0; i < stripes_needed; i++) {
-        offs[i] = find_hole_for_chunk(f, stripe_size);
+        offs[i] = find_hole_for_chunk(f, stripe_size, false);
 
         insert_dev_extent(f, f.dev.sb.dev_item.devid, offs[i], chunk_offset,
                           stripe_size);

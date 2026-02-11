@@ -1092,7 +1092,10 @@ static void update_block_group_flags(fs& f, uint64_t offset, uint64_t length,
 static void allocate_stripe(fs& f, uint64_t offset, uint64_t size) {
     auto& sb = f.dev.sb;
 
-    auto phys = find_hole_for_chunk(f, size);
+    /* FIXME - we could also look for a 64KB hole in the data and choose the
+               stripe offset so any superblock goes there */
+
+    auto phys = find_hole_for_chunk(f, size, true);
 
     auto key = btrfs::key{ btrfs::FIRST_CHUNK_TREE_OBJECTID, btrfs::key_type::CHUNK_ITEM, offset };
     span<uint8_t> sp;
