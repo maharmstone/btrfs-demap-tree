@@ -1646,8 +1646,13 @@ static void load_fst_bitmap(fs& f, vector<pair<uint64_t, uint64_t>>& c,
                 last_zero = false;
             } else {
                 if (!last_zero) {
-                    c.emplace_back(offset + (run_start * sector_size),
-                                   (((i * 8) + j) - run_start) * sector_size);
+                    uint64_t start = offset + (run_start * sector_size);
+                    uint64_t length = (((i * 8) + j) - run_start) * sector_size;
+
+                    if (!c.empty() && c.back().first + c.back().second == start)
+                        c.back().second += length;
+                    else
+                        c.emplace_back(start, length);
                 }
 
                 last_zero = true;
@@ -1658,8 +1663,13 @@ static void load_fst_bitmap(fs& f, vector<pair<uint64_t, uint64_t>>& c,
     }
 
     if (!last_zero) {
-        c.emplace_back(offset + (run_start * sector_size),
-                       ((s.size() * 8) - run_start) * sector_size);
+        uint64_t start = offset + (run_start * sector_size);
+        uint64_t length = ((s.size() * 8) - run_start) * sector_size;
+
+        if (!c.empty() && c.back().first + c.back().second == start)
+            c.back().second += length;
+        else
+            c.emplace_back(start, length);
     }
 }
 
